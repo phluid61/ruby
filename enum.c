@@ -507,6 +507,49 @@ enum_to_a(int argc, VALUE *argv, VALUE obj)
 }
 
 static VALUE
+collect_in_hash(VALUE i, VALUE hsh, int argc, VALUE *argv)
+{
+    VALUE tmp;
+    long len;
+
+    rb_thread_check_ints();
+
+    tmp = rb_enum_values_pack(argc, argv);
+    if (rb_type(tmp) == T_ARRAY) {
+	len = RARRAY_LEN(tmp);
+	if (len < 1 || len > 2) {
+	    rb_raise(rb_eArgError, "invalid number of elements (%ld for 1..2)", len);
+	} else {
+	    rb_hash_aset(hsh, rb_ary_entry(tmp,0), rb_ary_entry(tmp,1));
+	}
+    } else {
+	rb_hash_aset(hsh, tmp, Qnil);
+    }
+
+    return Qnil;
+}
+
+/*
+ *  call-seq:
+ *     enum.to_h      -> hash
+ *
+ *  Returns an array containing the items in <i>enum</i>.
+ *
+ *     (1..7).to_a                       #=> [1, 2, 3, 4, 5, 6, 7]
+ *     { 'a'=>1, 'b'=>2, 'c'=>3 }.to_a   #=> [["a", 1], ["b", 2], ["c", 3]]
+ */
+static VALUE
+enum_to_h(int argc, VALUE *argv, VALUE obj)
+{
+    VALUE hsh = rb_hash_new();
+
+    rb_block_call(obj, id_each, argc, argv, collect_in_hash, hsh);
+    OBJ_INFECT(hsh, obj);
+
+    return hsh;
+}
+
+static VALUE
 inject_i(VALUE i, VALUE p, int argc, VALUE *argv)
 {
     NODE *memo = RNODE(p);
@@ -2744,6 +2787,8 @@ Init_Enumerable(void)
 
     rb_define_method(rb_mEnumerable, "to_a", enum_to_a, -1);
     rb_define_method(rb_mEnumerable, "entries", enum_to_a, -1);
+
+    rb_define_method(rb_mEnumerable, "to_h", enum_to_h, -1);
 
     rb_define_method(rb_mEnumerable, "sort", enum_sort, 0);
     rb_define_method(rb_mEnumerable, "sort_by", enum_sort_by, 0);
