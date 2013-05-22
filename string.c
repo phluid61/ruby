@@ -7774,28 +7774,6 @@ rb_str_ellipsize(VALUE str, long len)
 
 /*
  *  call-seq:
- *     Symbol[str]    => Symbol or nil
- *
- *  Returns an extant symbol, which is the .to_sym of +str+, or
- *  nil if no such symbol exists.
- *
- *     Symbol['Object']      #=> :Object
- *     Symbol['none such']   #=> nil
- */
-
-VALUE
-sym_lookup(VALUE cls, VALUE str)
-{
-    st_data_t id;
-    if (id = rb_check_id(&str)) {
-	return ID2SYM(id);
-    }
-    return Qnil;
-}
-
-
-/*
- *  call-seq:
  *     sym == obj   -> true or false
  *
  *  Equality---If <i>sym</i> and <i>obj</i> are exactly the same
@@ -8349,7 +8327,6 @@ Init_String(void)
     rb_undef_alloc_func(rb_cSymbol);
     rb_undef_method(CLASS_OF(rb_cSymbol), "new");
     rb_define_singleton_method(rb_cSymbol, "all_symbols", rb_sym_all_symbols, 0); /* in parse.y */
-    rb_define_singleton_method(rb_cSymbol, "[]", sym_lookup, 1);
 
     rb_define_method(rb_cSymbol, "==", sym_equal, 1);
     rb_define_method(rb_cSymbol, "===", sym_equal, 1);
