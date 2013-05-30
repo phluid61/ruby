@@ -34,9 +34,13 @@ VALUE rb_eSysStackError;
 #include "eval_error.c"
 #include "eval_jump.c"
 
+#define CLASS_OR_MODULE_P(obj) \
+    (!SPECIAL_CONST_P(obj) && \
+     (BUILTIN_TYPE(obj) == T_CLASS || BUILTIN_TYPE(obj) == T_MODULE))
+
 /* Initializes the Ruby VM and builtin libraries.
  * @retval 0 if succeeded.
- * @retval non-zero an error occured.
+ * @retval non-zero an error occurred.
  */
 int
 ruby_setup(void)
@@ -65,7 +69,7 @@ ruby_setup(void)
 
 /* Calls ruby_setup() and check error.
  *
- * Prints errors and calls exit(3) if an error occured.
+ * Prints errors and calls exit(3) if an error occurred.
  */
 void
 ruby_init(void)
@@ -80,7 +84,7 @@ ruby_init(void)
 /*! Processes command line arguments and compiles the Ruby source to execute.
  *
  * This function does:
- * \li  Processses the given command line flags and arguments for ruby(1)
+ * \li  Processes the given command line flags and arguments for ruby(1)
  * \li compiles the source code from the given argument, -e or stdin, and
  * \li returns the compiled source as an opaque pointer to an internal data structure
  *
@@ -147,7 +151,7 @@ ruby_finalize(void)
  * resources used by the VM.
  *
  * @param ex Default value to the return value.
- * @return If an error occured returns a non-zero. If otherwise, returns the
+ * @return If an error occurred returns a non-zero. If otherwise, returns the
  *         given ex.
  * @note This function does not raise any exception.
  */
@@ -293,7 +297,7 @@ ruby_executable_node(void *n, int *status)
 }
 
 /*! Runs the given compiled source and exits this process.
- * @retval 0 if successfully run thhe source
+ * @retval 0 if successfully run the source
  * @retval non-zero if an error occurred.
 */
 int
@@ -402,13 +406,17 @@ rb_mod_s_constants(int argc, VALUE *argv, VALUE mod)
 void
 rb_frozen_class_p(VALUE klass)
 {
-    const char *desc = "something(?!)";
-
+    if (SPECIAL_CONST_P(klass)) {
+      noclass:
+	Check_Type(klass, T_CLASS);
+    }
     if (OBJ_FROZEN(klass)) {
+	const char *desc;
+
 	if (FL_TEST(klass, FL_SINGLETON))
 	    desc = "object";
 	else {
-	    switch (TYPE(klass)) {
+	    switch (BUILTIN_TYPE(klass)) {
 	      case T_MODULE:
 	      case T_ICLASS:
 		desc = "module";
@@ -416,6 +424,8 @@ rb_frozen_class_p(VALUE klass)
 	      case T_CLASS:
 		desc = "class";
 		break;
+	      default:
+		goto noclass;
 	    }
 	}
 	rb_error_frozen(desc);
@@ -850,7 +860,7 @@ frame_func_id(rb_control_frame_t *cfp)
 	if (RUBY_VM_IFUNC_P(iseq)) {
 	    NODE *ifunc = (NODE *)iseq;
 	    if (ifunc->nd_aid) return ifunc->nd_aid;
-	    return rb_intern("<ifunc>");
+	    return idIFUNC;
 	}
 	me_local = method_entry_of_iseq(cfp, iseq);
 	if (me_local) {
@@ -880,7 +890,7 @@ frame_called_id(rb_control_frame_t *cfp)
 	if (RUBY_VM_IFUNC_P(iseq)) {
 	    NODE *ifunc = (NODE *)iseq;
 	    if (ifunc->nd_aid) return ifunc->nd_aid;
-	    return rb_intern("<ifunc>");
+	    return idIFUNC;
 	}
 	me_local = method_entry_of_iseq(cfp, iseq);
 	if (me_local) {
@@ -904,6 +914,12 @@ rb_frame_this_func(void)
     return frame_func_id(GET_THREAD()->cfp);
 }
 
+ID
+rb_frame_callee(void)
+{
+    return frame_called_id(GET_THREAD()->cfp);
+}
+
 static rb_control_frame_t *
 previous_frame(rb_thread_t *th)
 {
@@ -915,8 +931,8 @@ previous_frame(rb_thread_t *th)
     return prev_cfp;
 }
 
-ID
-rb_frame_callee(void)
+static ID
+prev_frame_callee(void)
 {
     rb_control_frame_t *prev_cfp = previous_frame(GET_THREAD());
     if (!prev_cfp) return 0;
@@ -924,7 +940,7 @@ rb_frame_callee(void)
 }
 
 static ID
-rb_frame_caller(void)
+prev_frame_func(void)
 {
     rb_control_frame_t *prev_cfp = previous_frame(GET_THREAD());
     if (!prev_cfp) return 0;
@@ -953,13 +969,8 @@ rb_frame_pop(void)
 static VALUE
 rb_mod_append_features(VALUE module, VALUE include)
 {
-    switch (TYPE(include)) {
-      case T_CLASS:
-      case T_MODULE:
-	break;
-      default:
+    if (!CLASS_OR_MODULE_P(include)) {
 	Check_Type(include, T_CLASS);
-	break;
     }
     rb_include_module(include, module);
 
@@ -1006,13 +1017,8 @@ rb_mod_include(int argc, VALUE *argv, VALUE module)
 static VALUE
 rb_mod_prepend_features(VALUE module, VALUE prepend)
 {
-    switch (TYPE(prepend)) {
-      case T_CLASS:
-      case T_MODULE:
-	break;
-      default:
+    if (!CLASS_OR_MODULE_P(prepend)) {
 	Check_Type(prepend, T_CLASS);
-	break;
     }
     rb_prepend_module(prepend, module);
 
@@ -1060,7 +1066,7 @@ hidden_identity_hash_new()
     VALUE hash = rb_hash_new();
 
     rb_funcall(hash, rb_intern("compare_by_identity"), 0);
-    RBASIC(hash)->klass = 0;  /* hide from ObjectSpace */
+    RBASIC_CLEAR_CLASS(hash); /* hide from ObjectSpace */
     return hash;
 }
 
@@ -1097,7 +1103,7 @@ rb_using_refinement(NODE *cref, VALUE klass, VALUE module)
     module = RCLASS_SUPER(module);
     while (module && module != klass) {
 	FL_SET(module, RMODULE_IS_OVERLAID);
-	c = RCLASS_SUPER(c) = rb_include_class_new(module, RCLASS_SUPER(c));
+	c = RCLASS_SET_SUPER(c, rb_include_class_new(module, RCLASS_SUPER(c)));
 	RCLASS_REFINED_CLASS(c) = klass;
 	module = RCLASS_SUPER(module);
     }
@@ -1156,8 +1162,7 @@ add_activated_refinement(VALUE activated_refinements,
     refinement = RCLASS_SUPER(refinement);
     while (refinement) {
 	FL_SET(refinement, RMODULE_IS_OVERLAID);
-	c = RCLASS_SUPER(c) =
-	    rb_include_class_new(refinement, RCLASS_SUPER(c));
+	c = RCLASS_SET_SUPER(c, rb_include_class_new(refinement, RCLASS_SUPER(c)));
 	RCLASS_REFINED_CLASS(c) = klass;
 	refinement = RCLASS_SUPER(refinement);
     }
@@ -1210,7 +1215,7 @@ rb_mod_refine(VALUE module, VALUE klass)
     refinement = rb_hash_lookup(refinements, klass);
     if (NIL_P(refinement)) {
 	refinement = rb_module_new();
-	RCLASS_SUPER(refinement) = klass;
+	RCLASS_SET_SUPER(refinement, klass);
 	FL_SET(refinement, RMODULE_IS_REFINEMENT);
 	CONST_ID(id_refined_class, "__refined_class__");
 	rb_ivar_set(refinement, id_refined_class, klass);
@@ -1472,9 +1477,9 @@ errat_setter(VALUE val, ID id, VALUE *var)
 /*
  *  call-seq:
  *     __method__         -> symbol
- *     __callee__         -> symbol
  *
- *  Returns the name of the current method as a Symbol.
+ *  Returns the name at the definition of the current method as a
+ *  Symbol.
  *  If called outside of a method, it returns <code>nil</code>.
  *
  */
@@ -1482,7 +1487,7 @@ errat_setter(VALUE val, ID id, VALUE *var)
 static VALUE
 rb_f_method_name(void)
 {
-    ID fname = rb_frame_caller(); /* need *caller* ID */
+    ID fname = prev_frame_func(); /* need *method* ID */
 
     if (fname) {
 	return ID2SYM(fname);
@@ -1492,10 +1497,19 @@ rb_f_method_name(void)
     }
 }
 
+/*
+ *  call-seq:
+ *     __callee__         -> symbol
+ *
+ *  Returns the called name of the current method as a Symbol.
+ *  If called outside of a method, it returns <code>nil</code>.
+ *
+ */
+
 static VALUE
 rb_f_callee_name(void)
 {
-    ID fname = rb_frame_callee(); /* need *callee* ID */
+    ID fname = prev_frame_callee(); /* need *callee* ID */
 
     if (fname) {
 	return ID2SYM(fname);

@@ -18,6 +18,7 @@
 #include "node.h"
 #include "constant.h"
 #include "internal.h"
+#include "id.h"
 
 st_table *rb_global_tbl;
 st_table *rb_class_tbl;
@@ -907,7 +908,7 @@ rb_generic_ivar_table(VALUE obj)
 }
 
 static VALUE
-generic_ivar_get(VALUE obj, ID id, int warn)
+generic_ivar_get(VALUE obj, ID id, VALUE undef)
 {
     st_data_t tbl, val;
 
@@ -918,10 +919,7 @@ generic_ivar_get(VALUE obj, ID id, int warn)
 	    }
 	}
     }
-    if (warn) {
-	rb_warning("instance variable %"PRIsVALUE" not initialized", QUOTE_ID(id));
-    }
-    return Qnil;
+    return undef;
 }
 
 static void
@@ -942,9 +940,11 @@ generic_ivar_set(VALUE obj, ID id, VALUE val)
 	tbl = st_init_numtable();
 	st_add_direct(generic_iv_tbl, (st_data_t)obj, (st_data_t)tbl);
 	st_add_direct(tbl, (st_data_t)id, (st_data_t)val);
+	if (FL_ABLE(obj)) OBJ_WRITTEN(obj, Qundef, val);
 	return;
     }
     st_insert((st_table *)data, (st_data_t)id, (st_data_t)val);
+    if (FL_ABLE(obj)) OBJ_WRITTEN(obj, data, val);
 }
 
 static VALUE
@@ -1070,7 +1070,7 @@ rb_copy_generic_ivar(VALUE clone, VALUE obj)
 }
 
 static VALUE
-ivar_get(VALUE obj, ID id, int warn)
+rb_ivar_lookup(VALUE obj, ID id, VALUE undef)
 {
     VALUE val, *ptr;
     struct st_table *iv_index_tbl;
@@ -1098,25 +1098,28 @@ ivar_get(VALUE obj, ID id, int warn)
       default:
       generic:
 	if (FL_TEST(obj, FL_EXIVAR) || rb_special_const_p(obj))
-	    return generic_ivar_get(obj, id, warn);
+	    return generic_ivar_get(obj, id, undef);
 	break;
     }
-    if (warn) {
-	rb_warning("instance variable %"PRIsVALUE" not initialized", QUOTE_ID(id));
-    }
-    return Qnil;
+    return undef;
 }
 
 VALUE
 rb_ivar_get(VALUE obj, ID id)
 {
-    return ivar_get(obj, id, TRUE);
+    VALUE iv = rb_ivar_lookup(obj, id, Qundef);
+
+    if (iv == Qundef) {
+	rb_warning("instance variable %"PRIsVALUE" not initialized", QUOTE_ID(id));
+	iv = Qnil;
+    }
+    return iv;
 }
 
 VALUE
 rb_attr_get(VALUE obj, ID id)
 {
-    return ivar_get(obj, id, FALSE);
+    return rb_ivar_lookup(obj, id, Qnil);
 }
 
 VALUE
@@ -1180,12 +1183,13 @@ rb_ivar_set(VALUE obj, ID id, VALUE val)
                 ROBJECT(obj)->as.heap.iv_index_tbl = iv_index_tbl;
             }
         }
-        ROBJECT_IVPTR(obj)[index] = val;
+        OBJ_WRITE(obj, &ROBJECT_IVPTR(obj)[index], val);
 	break;
       case T_CLASS:
       case T_MODULE:
 	if (!RCLASS_IV_TBL(obj)) RCLASS_IV_TBL(obj) = st_init_numtable();
 	st_insert(RCLASS_IV_TBL(obj), (st_data_t)id, val);
+	OBJ_WRITTEN(obj, Qundef, val);
         break;
       default:
       generic:
@@ -2228,6 +2232,7 @@ set_const_visibility(VALUE mod, int argc, VALUE *argv, rb_const_flag_t flag)
     if (argc == 0) {
 	rb_warning("%"PRIsVALUE" with no argument is just ignored",
 		   QUOTE_ID(rb_frame_callee()));
+	return;
     }
 
     for (i = 0; i < argc; i++) {
@@ -2300,7 +2305,7 @@ static VALUE
 cvar_front_klass(VALUE klass)
 {
     if (FL_TEST(klass, FL_SINGLETON)) {
-	VALUE obj = rb_iv_get(klass, "__attached__");
+	VALUE obj = rb_ivar_get(klass, id__attached__);
 	if (RB_TYPE_P(obj, T_MODULE) || RB_TYPE_P(obj, T_CLASS)) {
 	    return obj;
 	}

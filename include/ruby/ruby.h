@@ -26,6 +26,8 @@ extern "C" {
 #include RUBY_EXTCONF_H
 #endif
 
+#include "defines.h"
+
 #define NORETURN_STYLE_NEW 1
 #ifndef NORETURN
 # define NORETURN(x) x
@@ -47,31 +49,13 @@ extern "C" {
 #define PRINTF_ARGS(decl, string_index, first_to_check) decl
 #endif
 
-#ifdef HAVE_STRING_H
-# include <string.h>
-#else
-# include <strings.h>
-#endif
-
 #ifdef HAVE_INTRINSICS_H
 # include <intrinsics.h>
 #endif
 
-#ifdef HAVE_STDINT_H
-# include <stdint.h>
-#endif
-#ifdef HAVE_INTTYPES_H
-# include <inttypes.h>
-#endif
-
 #include <stdarg.h>
-#include <stdio.h>
 
-#include "defines.h"
-
-#if defined __GNUC__ && __GNUC__ >= 4
-#pragma GCC visibility push(default)
-#endif
+RUBY_SYMBOL_EXPORT_BEGIN
 
 /* Make alloca work the best possible way.  */
 #ifdef __GNUC__
@@ -119,7 +103,7 @@ typedef unsigned LONG_LONG ID;
 
 typedef char ruby_check_sizeof_int[SIZEOF_INT == sizeof(int) ? 1 : -1];
 typedef char ruby_check_sizeof_long[SIZEOF_LONG == sizeof(long) ? 1 : -1];
-#ifdef SIZEOF_LONG_LONG
+#ifdef HAVE_LONG_LONG
 typedef char ruby_check_sizeof_long_long[SIZEOF_LONG_LONG == sizeof(LONG_LONG) ? 1 : -1];
 #endif
 typedef char ruby_check_sizeof_voidp[SIZEOF_VOIDP == sizeof(void*) ? 1 : -1];
@@ -255,12 +239,14 @@ VALUE rb_ull2inum(unsigned LONG_LONG);
 #define ULL2NUM(v) rb_ull2inum(v)
 #endif
 
+#ifndef OFFT2NUM
 #if SIZEOF_OFF_T > SIZEOF_LONG && defined(HAVE_LONG_LONG)
 # define OFFT2NUM(v) LL2NUM(v)
 #elif SIZEOF_OFF_T == SIZEOF_LONG
 # define OFFT2NUM(v) LONG2NUM(v)
 #else
 # define OFFT2NUM(v) INT2NUM(v)
+#endif
 #endif
 
 #if SIZEOF_SIZE_T > SIZEOF_LONG && defined(HAVE_LONG_LONG)
@@ -350,8 +336,8 @@ rb_long2int_inline(long n)
 #define MODET2NUM(v) INT2NUM(v)
 #endif
 
-#define FIX2LONG(x) (long)RSHIFT((SIGNED_VALUE)(x),1)
-#define FIX2ULONG(x) ((((VALUE)(x))>>1)&LONG_MAX)
+#define FIX2LONG(x) ((long)RSHIFT((SIGNED_VALUE)(x),1))
+#define FIX2ULONG(x) ((unsigned long)FIX2LONG(x))
 #define FIXNUM_P(f) (((int)(SIGNED_VALUE)(f))&FIXNUM_FLAG)
 #define POSFIXABLE(f) ((f) < FIXNUM_MAX+1)
 #define NEGFIXABLE(f) ((f) >= FIXNUM_MIN)
@@ -520,10 +506,11 @@ static inline int rb_type(VALUE obj);
 #else
 #ifdef _MSC_VER
 #pragma optimize("", off)
-#endif
 static inline volatile VALUE *rb_gc_guarded_ptr(volatile VALUE *ptr) {return ptr;}
-#ifdef _MSC_VER
 #pragma optimize("", on)
+#else
+volatile VALUE *rb_gc_guarded_ptr(volatile VALUE *ptr);
+#define HAVE_RB_GC_GUARDED_PTR 1
 #endif
 #define RB_GC_GUARD_PTR(ptr) rb_gc_guarded_ptr(ptr)
 #endif
@@ -657,10 +644,12 @@ rb_num2ll_inline(VALUE x)
 # define NUM2ULL(x) rb_num2ull(x)
 #endif
 
-#if defined(HAVE_LONG_LONG) && SIZEOF_OFF_T > SIZEOF_LONG
-# define NUM2OFFT(x) ((off_t)NUM2LL(x))
-#else
-# define NUM2OFFT(x) NUM2LONG(x)
+#if !defined(NUM2OFFT)
+# if defined(HAVE_LONG_LONG) && SIZEOF_OFF_T > SIZEOF_LONG
+#  define NUM2OFFT(x) ((off_t)NUM2LL(x))
+# else
+#  define NUM2OFFT(x) NUM2LONG(x)
+# endif
 #endif
 
 #if defined(HAVE_LONG_LONG) && SIZEOF_SIZE_T > SIZEOF_LONG
@@ -679,13 +668,10 @@ VALUE rb_int2big(SIGNED_VALUE);
 
 VALUE rb_newobj(void);
 VALUE rb_newobj_of(VALUE, VALUE);
+VALUE rb_obj_setup(VALUE obj, VALUE klass, VALUE type);
 #define NEWOBJ(obj,type) type *(obj) = (type*)rb_newobj()
 #define NEWOBJ_OF(obj,type,klass,flags) type *(obj) = (type*)rb_newobj_of(klass, flags)
-#define OBJSETUP(obj,c,t) do {\
-    RBASIC(obj)->flags = (t);\
-    RBASIC(obj)->klass = (c);\
-    if (rb_safe_level() >= 3) FL_SET((obj), FL_TAINT | FL_UNTRUSTED);\
-} while (0)
+#define OBJSETUP(obj,c,t) rb_obj_setup(obj, c, t) /* use NEWOBJ_OF instead of NEWOBJ()+OBJSETUP() */
 #define CLONESETUP(clone,obj) do {\
     OBJSETUP((clone),rb_singleton_class_clone((VALUE)(obj)),RBASIC(obj)->flags);\
     rb_singleton_class_attached(RBASIC(clone)->klass, (VALUE)(clone));\
@@ -696,14 +682,50 @@ VALUE rb_newobj_of(VALUE, VALUE);
     if (FL_TEST((obj), FL_EXIVAR)) rb_copy_generic_ivar((VALUE)(dup),(VALUE)(obj));\
 } while (0)
 
+#ifndef USE_RGENGC
+#define USE_RGENGC 1
+#endif
+
+#ifndef RGENGC_WB_PROTECTED_ARRAY
+#define RGENGC_WB_PROTECTED_ARRAY 1
+#endif
+
+#ifndef RGENGC_WB_PROTECTED_HASH
+#define RGENGC_WB_PROTECTED_HASH 1
+#endif
+
+#ifndef RGENGC_WB_PROTECTED_STRING
+#define RGENGC_WB_PROTECTED_STRING 1
+#endif
+#ifndef RGENGC_WB_PROTECTED_OBJECT
+#define RGENGC_WB_PROTECTED_OBJECT 1
+#endif
+#ifndef RGENGC_WB_PROTECTED_FLOAT
+#define RGENGC_WB_PROTECTED_FLOAT 1
+#endif
+#ifndef RGENGC_WB_PROTECTED_COMPLEX
+#define RGENGC_WB_PROTECTED_COMPLEX 1
+#endif
+#ifndef RGENGC_WB_PROTECTED_RATIONAL
+#define RGENGC_WB_PROTECTED_RATIONAL 1
+#endif
+#ifndef RGENGC_WB_PROTECTED_BIGNUM
+#define RGENGC_WB_PROTECTED_BIGNUM 1
+#endif
+
 struct RBasic {
     VALUE flags;
-    VALUE klass;
+    const VALUE klass;
 }
 #ifdef __GNUC__
     __attribute__((aligned(sizeof(VALUE))))
 #endif
 ;
+
+VALUE rb_obj_hide(VALUE obj);
+VALUE rb_obj_reveal(VALUE obj, VALUE klass); /* do not use this API to change klass information */
+
+#define RBASIC_CLASS(obj) (RBASIC(obj)->klass)
 
 #define ROBJECT_EMBED_LEN_MAX 3
 struct RObject {
@@ -901,11 +923,32 @@ struct RArray {
      (long)((RBASIC(a)->flags >> RARRAY_EMBED_LEN_SHIFT) & \
 	 (RARRAY_EMBED_LEN_MASK >> RARRAY_EMBED_LEN_SHIFT)) : \
      RARRAY(a)->as.heap.len)
-#define RARRAY_PTR(a) \
-    ((RBASIC(a)->flags & RARRAY_EMBED_FLAG) ? \
-     RARRAY(a)->as.ary : \
-     RARRAY(a)->as.heap.ptr)
+
 #define RARRAY_LENINT(ary) rb_long2int(RARRAY_LEN(ary))
+
+/* DO NOT USE THIS MACRO DIRECTLY */
+#define RARRAY_RAWPTR(a) \
+  ((RBASIC(a)->flags & RARRAY_EMBED_FLAG) ? \
+   RARRAY(a)->as.ary : \
+   RARRAY(a)->as.heap.ptr)
+
+#define RARRAY_PTR_USE_START(a) RARRAY_RAWPTR(a)
+#define RARRAY_PTR_USE_END(a) /* */
+
+#define RARRAY_PTR_USE(ary, ptr_name, expr) do { \
+    const VALUE _ary = (ary); \
+    VALUE *ptr_name = RARRAY_PTR_USE_START(_ary); \
+    expr; \
+    RARRAY_PTR_USE_END(_ary); \
+} while (0)
+
+#define RARRAY_AREF(a, i)    (RARRAY_RAWPTR(a)[i])
+#define RARRAY_ASET(a, i, v) do { \
+    const VALUE _ary_ = (a); \
+    OBJ_WRITE(_ary_, &RARRAY_RAWPTR(_ary_)[i], (v)); \
+} while (0)
+
+#define RARRAY_PTR(a) RARRAY_RAWPTR(RGENGC_WB_PROTECTED_ARRAY ? OBJ_WB_GIVEUP((VALUE)a) : ((VALUE)a))
 
 struct RRegexp {
     struct RBasic basic;
@@ -922,14 +965,15 @@ struct RHash {
     struct RBasic basic;
     struct st_table *ntbl;      /* possibly 0 */
     int iter_lev;
-    VALUE ifnone;
+    const VALUE ifnone;
 };
 /* RHASH_TBL allocates st_table if not available. */
 #define RHASH_TBL(h) rb_hash_tbl(h)
 #define RHASH_ITER_LEV(h) (RHASH(h)->iter_lev)
 #define RHASH_IFNONE(h) (RHASH(h)->ifnone)
-#define RHASH_SIZE(h) (RHASH(h)->ntbl ? RHASH(h)->ntbl->num_entries : 0)
+#define RHASH_SIZE(h) (RHASH(h)->ntbl ? (st_index_t)RHASH(h)->ntbl->num_entries : 0)
 #define RHASH_EMPTY_P(h) (RHASH_SIZE(h) == 0)
+#define RHASH_SET_IFNONE(h, ifnone) rb_hash_set_ifnone((VALUE)h, ifnone)
 
 struct RFile {
     struct RBasic basic;
@@ -938,15 +982,21 @@ struct RFile {
 
 struct RRational {
     struct RBasic basic;
-    VALUE num;
-    VALUE den;
+    const VALUE num;
+    const VALUE den;
 };
+
+#define RRATIONAL_SET_NUM(rat, n) OBJ_WRITE((rat), ((VALUE *)(&((struct RRational *)(rat))->num)),(n))
+#define RRATIONAL_SET_DEN(rat, d) OBJ_WRITE((rat), ((VALUE *)(&((struct RRational *)(rat))->den)),(d))
 
 struct RComplex {
     struct RBasic basic;
-    VALUE real;
-    VALUE imag;
+    const VALUE real;
+    const VALUE imag;
 };
+
+#define RCOMPLEX_SET_REAL(cmp, r) OBJ_WRITE((cmp), ((VALUE *)(&((struct RComplex *)(cmp))->real)),(r))
+#define RCOMPLEX_SET_IMAG(cmp, i) OBJ_WRITE((cmp), ((VALUE *)(&((struct RComplex *)(cmp))->imag)),(i))
 
 struct RData {
     struct RBasic basic;
@@ -1109,8 +1159,8 @@ struct RBignum {
 #define RCOMPLEX(obj) (R_CAST(RComplex)(obj))
 
 #define FL_SINGLETON FL_USER0
-#define FL_RESERVED1 (((VALUE)1)<<5)
-#define FL_RESERVED2 (((VALUE)1)<<6) /* will be used in the future GC */
+#define FL_WB_PROTECTED (((VALUE)1)<<5)
+#define FL_OLDGEN    (((VALUE)1)<<6)
 #define FL_FINALIZE  (((VALUE)1)<<7)
 #define FL_TAINT     (((VALUE)1)<<8)
 #define FL_UNTRUSTED (((VALUE)1)<<9)
@@ -1143,7 +1193,8 @@ struct RBignum {
 #define SPECIAL_CONST_P(x) (IMMEDIATE_P(x) || !RTEST(x))
 
 #define FL_ABLE(x) (!SPECIAL_CONST_P(x) && BUILTIN_TYPE(x) != T_NODE)
-#define FL_TEST(x,f) (FL_ABLE(x)?(RBASIC(x)->flags&(f)):0)
+#define FL_TEST_RAW(x,f) (RBASIC(x)->flags&(f))
+#define FL_TEST(x,f) (FL_ABLE(x)?FL_TEST_RAW((x),(f)):0)
 #define FL_ANY(x,f) FL_TEST((x),(f))
 #define FL_ALL(x,f) (FL_TEST((x),(f)) == (f))
 #define FL_SET(x,f) do {if (FL_ABLE(x)) RBASIC(x)->flags |= (f);} while (0)
@@ -1162,6 +1213,77 @@ struct RBignum {
 
 #define OBJ_FROZEN(x) (!!(FL_ABLE(x)?(RBASIC(x)->flags&(FL_FREEZE)):(FIXNUM_P(x)||FLONUM_P(x))))
 #define OBJ_FREEZE(x) FL_SET((x), FL_FREEZE)
+
+#if USE_RGENGC
+#define OBJ_PROMOTED(x)             (SPECIAL_CONST_P(x) ? 0 : FL_TEST_RAW((x), FL_OLDGEN))
+#define OBJ_WB_PROTECTED(x)         (SPECIAL_CONST_P(x) ? 1 : FL_TEST_RAW((x), FL_WB_PROTECTED))
+#define OBJ_WB_GIVEUP(x)            rb_obj_wb_giveup(x, __FILE__, __LINE__)
+
+void rb_gc_writebarrier(VALUE a, VALUE b);
+void rb_gc_giveup_promoted_writebarrier(VALUE obj);
+
+#else /* USE_RGENGC */
+#define OBJ_PROMOTED(x)             0
+#define OBJ_WB_PROTECTED(x)         0
+#define OBJ_WB_GIVEUP(x)            rb_obj_wb_giveup(x, __FILE__, __LINE__)
+#define OBJ_SHADE(x)                OBJ_WB_GIVEUP(x) /* RGENGC terminology */
+#endif
+
+#define OBJ_WRITE(a, slot, b)       rb_obj_write((VALUE)(a), (slot), (VALUE)(b), __FILE__, __LINE__)
+#define OBJ_WRITTEN(a, oldv, b)     rb_obj_written((VALUE)(a), (VALUE)(oldv), (VALUE)(b), __FILE__, __LINE__)
+
+static inline VALUE
+rb_obj_wb_giveup(VALUE x, const char *filename, int line)
+{
+#ifdef RGENGC_LOGGING_WB_GIVEUP
+    RGENGC_LOGGING_WB_GIVEUP(x, filename, line);
+#endif
+
+#if USE_RGENGC
+    /* `x' should be an RVALUE object */
+    if (FL_TEST_RAW((x), FL_WB_PROTECTED)) {
+	RBASIC(x)->flags &= ~FL_WB_PROTECTED;
+
+	if (FL_TEST_RAW((x), FL_OLDGEN)) {
+	    rb_gc_giveup_promoted_writebarrier(x);
+	}
+    }
+#endif
+    return x;
+}
+
+static inline VALUE
+rb_obj_written(VALUE a, VALUE oldv, VALUE b, const char *filename, int line)
+{
+#ifdef RGENGC_LOGGING_OBJ_WRITTEN
+    RGENGC_LOGGING_OBJ_WRITTEN(a, oldv, b, filename, line);
+#endif
+
+#if USE_RGENGC
+    /* `a' should be an RVALUE object */
+    if (FL_TEST_RAW((a), FL_OLDGEN) &&
+	!SPECIAL_CONST_P(b) && !FL_TEST_RAW((b), FL_OLDGEN)) {
+	rb_gc_writebarrier(a, b);
+    }
+#endif
+
+    return a;
+}
+
+static inline VALUE
+rb_obj_write(VALUE a, VALUE *slot, VALUE b, const char *filename, int line)
+{
+#ifdef RGENGC_LOGGING_WRIET
+    RGENGC_LOGGING_WRIET(a, slot, b, filename, line);
+#endif
+
+    *slot = b;
+
+#if USE_RGENGC
+    rb_obj_written(a, Qundef /* ignore `oldv' now */, b, filename, line);
+#endif
+    return a;
+}
 
 #if SIZEOF_INT < SIZEOF_LONG
 # define INT2NUM(v) INT2FIX((int)(v))
@@ -1226,7 +1348,7 @@ rb_num2char_inline(VALUE x)
 
 #define ALLOCA_N(type,n) ((type*)alloca(sizeof(type)*(n)))
 
-void *rb_alloc_tmp_buffer(volatile VALUE *store, long len);
+void *rb_alloc_tmp_buffer(volatile VALUE *store, long len) RUBY_ATTR_ALLOC_SIZE((2));
 void rb_free_tmp_buffer(volatile VALUE *store);
 /* allocates _n_ bytes temporary buffer and stores VALUE including it
  * in _v_.  _n_ may be evaluated twice. */
@@ -1370,6 +1492,7 @@ NORETURN(void rb_sys_fail(const char*));
 NORETURN(void rb_sys_fail_str(VALUE));
 NORETURN(void rb_mod_sys_fail(VALUE, const char*));
 NORETURN(void rb_mod_sys_fail_str(VALUE, VALUE));
+NORETURN(void rb_readwrite_sys_fail(int, const char*));
 NORETURN(void rb_iter_break(void));
 NORETURN(void rb_iter_break_value(VALUE));
 NORETURN(void rb_exit(int));
@@ -1388,6 +1511,10 @@ PRINTF_ARGS(void rb_sys_warning(const char*, ...), 1, 2);
 /* reports always */
 PRINTF_ARGS(void rb_warn(const char*, ...), 1, 2);
 PRINTF_ARGS(void rb_compile_warn(const char *, int, const char*, ...), 3, 4);
+
+/* for rb_readwrite_sys_fail first argument */
+#define RB_IO_WAIT_READABLE 0
+#define RB_IO_WAIT_WRITABLE 1
 
 typedef VALUE rb_block_call_func(VALUE, VALUE, int, VALUE*);
 
@@ -1588,16 +1715,25 @@ int ruby_native_thread_p(void);
 #define RUBY_EVENT_ALL       0x00ff
 
 /* for TracePoint extended events */
-#define RUBY_EVENT_B_CALL          0x0100
-#define RUBY_EVENT_B_RETURN        0x0200
-#define RUBY_EVENT_THREAD_BEGIN    0x0400
-#define RUBY_EVENT_THREAD_END      0x0800
-#define RUBY_EVENT_TRACEPOINT_ALL  0xFFFF
+#define RUBY_EVENT_B_CALL            0x0100
+#define RUBY_EVENT_B_RETURN          0x0200
+#define RUBY_EVENT_THREAD_BEGIN      0x0400
+#define RUBY_EVENT_THREAD_END        0x0800
+#define RUBY_EVENT_TRACEPOINT_ALL    0xffff
 
 /* special events */
-#define RUBY_EVENT_SPECIFIED_LINE 0x10000
-#define RUBY_EVENT_SWITCH         0x20000
-#define RUBY_EVENT_COVERAGE       0x40000
+#define RUBY_EVENT_SPECIFIED_LINE         0x010000
+#define RUBY_EVENT_COVERAGE               0x020000
+
+/* internal events */
+#define RUBY_INTERNAL_EVENT_SWITCH        0x040000
+                                       /* 0x080000 */
+#define RUBY_INTERNAL_EVENT_NEWOBJ        0x100000
+#define RUBY_INTERNAL_EVENT_FREEOBJ       0x200000
+#define RUBY_INTERNAL_EVENT_GC_START      0x400000
+#define RUBY_INTERNAL_EVENT_GC_END        0x800000
+#define RUBY_INTERNAL_EVENT_OBJSPACE_MASK 0xf00000
+#define RUBY_INTERNAL_EVENT_MASK        0xfffe0000
 
 typedef unsigned long rb_event_flag_t;
 typedef void (*rb_event_hook_func_t)(rb_event_flag_t evflag, VALUE data, VALUE self, ID mid, VALUE klass);
@@ -1628,6 +1764,7 @@ int rb_toupper(int c);
 #define ISASCII(c) rb_isascii((unsigned char)(c))
 #undef ISPRINT
 #define ISPRINT(c) rb_isprint((unsigned char)(c))
+#define ISGRAPH(c) rb_isgraph((unsigned char)(c))
 #define ISSPACE(c) rb_isspace((unsigned char)(c))
 #define ISUPPER(c) rb_isupper((unsigned char)(c))
 #define ISLOWER(c) rb_islower((unsigned char)(c))
@@ -1660,7 +1797,7 @@ int ruby_vsnprintf(char *str, size_t n, char const *fmt, va_list ap);
  * @defgroup embed CRuby Embedding APIs
  * CRuby interpreter APIs. These are APIs to embed MRI interpreter into your
  * program.
- * These functions are not a part of Ruby extention library API.
+ * These functions are not a part of Ruby extension library API.
  * Extension libraries of Ruby should not depend on these functions.
  * @{
  */
@@ -1722,9 +1859,7 @@ void ruby_sig_finalize(void);
 
 /*! @} */
 
-#if defined __GNUC__ && __GNUC__ >= 4
-#pragma GCC visibility pop
-#endif
+RUBY_SYMBOL_EXPORT_END
 
 #if defined(__cplusplus)
 #if 0

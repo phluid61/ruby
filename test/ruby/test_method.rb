@@ -238,7 +238,9 @@ class TestMethod < Test::Unit::TestCase
     assert_raise(TypeError) do
       Class.new.class_eval { define_method(:bar, o.method(:bar)) }
     end
+  end
 
+  def test_define_singleton_method
     o = Object.new
     def o.foo(c)
       c.class_eval { define_method(:foo) }
@@ -258,12 +260,46 @@ class TestMethod < Test::Unit::TestCase
     assert_raise(TypeError) do
       Module.new.module_eval {define_method(:foo, Base.instance_method(:foo))}
     end
+  end
 
+  def test_define_method_transplating
     feature4254 = '[ruby-core:34267]'
     m = Module.new {define_method(:meth, M.instance_method(:meth))}
     assert_equal(:meth, Object.new.extend(m).meth, feature4254)
     c = Class.new {define_method(:meth, M.instance_method(:meth))}
     assert_equal(:meth, c.new.meth, feature4254)
+  end
+
+  def test_define_method_visibility
+    c = Class.new do
+      public
+      define_method(:foo) {:foo}
+      protected
+      define_method(:bar) {:bar}
+      private
+      define_method(:baz) {:baz}
+    end
+
+    assert_equal(true, c.public_method_defined?(:foo))
+    assert_equal(false, c.public_method_defined?(:bar))
+    assert_equal(false, c.public_method_defined?(:baz))
+
+    assert_equal(false, c.protected_method_defined?(:foo))
+    assert_equal(true, c.protected_method_defined?(:bar))
+    assert_equal(false, c.protected_method_defined?(:baz))
+
+    assert_equal(false, c.private_method_defined?(:foo))
+    assert_equal(false, c.private_method_defined?(:bar))
+    assert_equal(true, c.private_method_defined?(:baz))
+
+    m = Module.new do
+      module_function
+      define_method(:foo) {:foo}
+    end
+    assert_equal(true, m.respond_to?(:foo))
+    assert_equal(false, m.public_method_defined?(:foo))
+    assert_equal(false, m.protected_method_defined?(:foo))
+    assert_equal(true, m.private_method_defined?(:foo))
   end
 
   def test_super_in_proc_from_define_method
@@ -517,7 +553,7 @@ class TestMethod < Test::Unit::TestCase
 
   def test___dir__
     assert_instance_of String, __dir__
-    assert_equal(File.dirname(__FILE__), __dir__)
+    assert_equal(File.expand_path("..", __FILE__), __dir__)
   end
 
   def test_alias_owner
@@ -579,14 +615,30 @@ class TestMethod < Test::Unit::TestCase
 
   def test_unlinked_method_entry_in_method_object_bug
     bug8100 = '[ruby-core:53640] [Bug #8100]'
-    assert_ruby_status [], %q{
+    begin
+      assert_normal_exit %q{
       loop do
         def x
           "hello" * 1000
         end
         method(:x).call
       end
-    }, bug8100, timeout: 2
-  rescue Timeout::Error
+      }, bug8100, timeout: 2
+    rescue Timeout::Error => e
+    else
+    end
+    assert_raise(Timeout::Error, bug8100) {raise e if e}
+  end
+
+  def test_singleton_method
+    feature8391 = '[ruby-core:54914] [Feature #8391]'
+    c1 = Class.new
+    c1.class_eval { def foo; :foo; end }
+    o = c1.new
+    def o.bar; :bar; end
+    assert_nothing_raised(NameError) {o.method(:foo)}
+    assert_raise(NameError, feature8391) {o.singleton_method(:foo)}
+    m = assert_nothing_raised(NameError, feature8391) {break o.singleton_method(:bar)}
+    assert_equal(:bar, m.call, feature8391)
   end
 end

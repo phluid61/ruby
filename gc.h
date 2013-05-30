@@ -2,7 +2,7 @@
 #ifndef RUBY_GC_H
 #define RUBY_GC_H 1
 
-#if defined(__x86_64__) && defined(__GNUC__) && !defined(__native_client__)
+#if defined(__x86_64__) && !defined(_ILP32) && defined(__GNUC__) && !defined(__native_client__)
 #define SET_MACHINE_STACK_END(p) __asm__ __volatile__ ("movq\t%%rsp, %0" : "=r" (*(p)))
 #elif defined(__i386) && defined(__GNUC__) && !defined(__native_client__)
 #define SET_MACHINE_STACK_END(p) __asm__ __volatile__ ("movl\t%%esp, %0" : "=r" (*(p)))
@@ -83,9 +83,7 @@ int ruby_get_stack_grow_direction(volatile VALUE *addr);
 #endif
 #define IS_STACK_DIR_UPPER() STACK_DIR_UPPER(1,0)
 
-#if defined __GNUC__ && __GNUC__ >= 4
-#pragma GCC visibility push(default)
-#endif
+RUBY_SYMBOL_EXPORT_BEGIN
 
 /* exports for objspace module */
 size_t rb_objspace_data_type_memsize(VALUE obj);
@@ -97,8 +95,6 @@ void rb_objspace_each_objects(
     int (*callback)(void *start, void *end, size_t stride, void *data),
     void *data);
 
-#if defined __GNUC__ && __GNUC__ >= 4
-#pragma GCC visibility pop
-#endif
+RUBY_SYMBOL_EXPORT_END
 
 #endif /* RUBY_GC_H */

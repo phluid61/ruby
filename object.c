@@ -22,6 +22,7 @@
 #include <float.h>
 #include "constant.h"
 #include "internal.h"
+#include "id.h"
 #include "probes.h"
 
 VALUE rb_cBasicObject;
@@ -35,13 +36,45 @@ VALUE rb_cNilClass;
 VALUE rb_cTrueClass;
 VALUE rb_cFalseClass;
 
-static ID id_eq, id_eql, id_match, id_inspect;
-static ID id_init_copy, id_init_clone, id_init_dup;
-static ID id_const_missing;
+#define id_eq               idEq
+#define id_eql              idEqlP
+#define id_match            idEqTilde
+#define id_inspect          idInspect
+#define id_init_copy        idInitialize_copy
+#define id_init_clone       idInitialize_clone
+#define id_init_dup         idInitialize_dup
+#define id_const_missing    idConst_missing
 
 #define CLASS_OR_MODULE_P(obj) \
     (!SPECIAL_CONST_P(obj) && \
      (BUILTIN_TYPE(obj) == T_CLASS || BUILTIN_TYPE(obj) == T_MODULE))
+
+VALUE
+rb_obj_hide(VALUE obj)
+{
+    if (!SPECIAL_CONST_P(obj)) {
+	RBASIC_CLEAR_CLASS(obj);
+    }
+    return obj;
+}
+
+VALUE
+rb_obj_reveal(VALUE obj, VALUE klass)
+{
+    if (!SPECIAL_CONST_P(obj)) {
+	RBASIC_SET_CLASS(obj, klass);
+    }
+    return obj;
+}
+
+VALUE
+rb_obj_setup(VALUE obj, VALUE klass, VALUE type)
+{
+    RBASIC(obj)->flags = type;
+    RBASIC_SET_CLASS(obj, klass);
+    if (rb_safe_level() >= 3) FL_SET((obj), FL_TAINT | FL_UNTRUSTED);
+    return obj;
+}
 
 /*
  *  call-seq:
@@ -302,13 +335,15 @@ rb_obj_clone(VALUE obj)
         rb_raise(rb_eTypeError, "can't clone %s", rb_obj_classname(obj));
     }
     clone = rb_obj_alloc(rb_obj_class(obj));
+    RBASIC(clone)->flags &= (FL_TAINT|FL_UNTRUSTED);
+    RBASIC(clone)->flags |= RBASIC(obj)->flags & ~(FL_OLDGEN|FL_FREEZE|FL_FINALIZE);
+
     singleton = rb_singleton_class_clone_and_attach(obj, clone);
-    RBASIC(clone)->klass = singleton;
+    RBASIC_SET_CLASS(clone, singleton);
     if (FL_TEST(singleton, FL_SINGLETON)) {
 	rb_singleton_class_attached(singleton, clone);
     }
-    RBASIC(clone)->flags &= (FL_TAINT|FL_UNTRUSTED);
-    RBASIC(clone)->flags |= RBASIC(obj)->flags & ~(FL_FREEZE|FL_FINALIZE);
+
     init_copy(clone, obj);
     rb_funcall(clone, id_init_clone, 1, obj);
     RBASIC(clone)->flags |= RBASIC(obj)->flags & FL_FREEZE;
@@ -395,7 +430,7 @@ rb_any_to_s(VALUE obj)
 /*
  * If the default external encoding is ASCII compatible, the encoding of
  * inspected result must be compatible with it.
- * If the default external encoding is ASCII incomapatible,
+ * If the default external encoding is ASCII incompatible,
  * the result must be ASCII only.
  */
 VALUE
@@ -409,7 +444,7 @@ rb_inspect(VALUE obj)
 	return str;
     }
     if (rb_enc_get(str) != ext && !rb_enc_str_asciionly_p(str))
-	rb_raise(rb_eEncCompatError, "inspected result must be ASCII only or use the same encoding with default external");
+	rb_raise(rb_eEncCompatError, "inspected result must be ASCII only or use the default external encoding");
     return str;
 }
 
@@ -584,6 +619,7 @@ rb_obj_is_kind_of(VALUE obj, VALUE c)
     VALUE cl = CLASS_OF(obj);
 
     c = class_or_module_required(c);
+    c = RCLASS_ORIGIN(c);
     while (cl) {
 	if (cl == c || RCLASS_M_TBL(cl) == RCLASS_M_TBL(c))
 	    return Qtrue;
@@ -835,7 +871,9 @@ rb_obj_dummy(void)
  *  call-seq:
  *     obj.tainted?    -> true or false
  *
- *  Returns <code>true</code> if the object is tainted.
+ *  Returns true if the object is tainted.
+ *
+ *  See #taint for more information.
  */
 
 VALUE
@@ -850,9 +888,20 @@ rb_obj_tainted(VALUE obj)
  *  call-seq:
  *     obj.taint -> obj
  *
- *  Marks <i>obj</i> as tainted---if the <code>$SAFE</code> level is
- *  set appropriately, many method calls which might alter the running
- *  programs environment will refuse to accept tainted strings.
+ *  Mark the object as tainted.
+ *
+ *  Objects that are marked as tainted will be restricted from various built-in
+ *  methods. This is to prevent insecure data, such as command-line arguments
+ *  or strings read from Kernel#gets, from inadvertently compromising the users
+ *  system.
+ *
+ *  To check whether an object is tainted, use #tainted?
+ *
+ *  You should only untaint a tainted object if your code has inspected it and
+ *  determined that it is safe. To do so use #untaint
+ *
+ *  In $SAFE level 3 and 4, all objects are tainted and untrusted, any use of
+ *  trust or taint methods will raise a SecurityError exception.
  */
 
 VALUE
@@ -871,7 +920,9 @@ rb_obj_taint(VALUE obj)
  *  call-seq:
  *     obj.untaint    -> obj
  *
- *  Removes the taint from <i>obj</i>.
+ *  Removes the tainted mark from the object.
+ *
+ *  See #taint for more information.
  */
 
 VALUE
@@ -889,7 +940,9 @@ rb_obj_untaint(VALUE obj)
  *  call-seq:
  *     obj.untrusted?    -> true or false
  *
- *  Returns <code>true</code> if the object is untrusted.
+ *  Returns true if the object is untrusted.
+ *
+ *  See #untrust for more information.
  */
 
 VALUE
@@ -904,7 +957,19 @@ rb_obj_untrusted(VALUE obj)
  *  call-seq:
  *     obj.untrust -> obj
  *
- *  Marks <i>obj</i> as untrusted.
+ *  Mark the object as untrusted.
+ *
+ *  An untrusted object is not allowed to modify any trusted objects. To check
+ *  whether an object is trusted, use #untrusted?
+ *
+ *  Any object created by untrusted code is marked as both tainted and
+ *  untrusted. See #taint for more information.
+ *
+ *  You should only trust an untrusted object if your code has inspected it and
+ *  determined that it is safe. To do so use #trust
+ *
+ *  In $SAFE level 3 and 4, all objects are tainted and untrusted, any use of
+ *  trust or taint methods will raise a SecurityError exception.
  */
 
 VALUE
@@ -923,7 +988,9 @@ rb_obj_untrust(VALUE obj)
  *  call-seq:
  *     obj.trust    -> obj
  *
- *  Removes the untrusted mark from <i>obj</i>.
+ *  Removes the untrusted mark from the object.
+ *
+ *  See #untrust for more information.
  */
 
 VALUE
@@ -1385,7 +1452,7 @@ rb_mod_to_s(VALUE klass)
 
     if (FL_TEST(klass, FL_SINGLETON)) {
 	VALUE s = rb_usascii_str_new2("#<Class:");
-	VALUE v = rb_iv_get(klass, "__attached__");
+	VALUE v = rb_ivar_get(klass, id__attached__);
 
 	if (CLASS_OR_MODULE_P(v)) {
 	    rb_str_append(s, rb_inspect(v));
@@ -1465,6 +1532,7 @@ rb_class_inherited_p(VALUE mod, VALUE arg)
     if (!CLASS_OR_MODULE_P(arg)) {
 	rb_raise(rb_eTypeError, "compared with non class/module");
     }
+    arg = RCLASS_ORIGIN(arg);
     while (mod) {
 	if (RCLASS_M_TBL(mod) == RCLASS_M_TBL(arg))
 	    return Qtrue;
@@ -1573,7 +1641,7 @@ rb_module_s_alloc(VALUE klass)
 {
     VALUE mod = rb_module_new();
 
-    RBASIC(mod)->klass = klass;
+    RBASIC_SET_CLASS(mod, klass);
     return mod;
 }
 
@@ -1666,7 +1734,7 @@ rb_class_initialize(int argc, VALUE *argv, VALUE klass)
 	    rb_raise(rb_eTypeError, "can't inherit uninitialized class");
 	}
     }
-    RCLASS_SUPER(klass) = super;
+    RCLASS_SET_SUPER(klass, super);
     rb_make_metaclass(klass, RBASIC(super)->klass);
     rb_class_inherited(super, klass);
     rb_mod_initialize(klass);
@@ -1734,7 +1802,7 @@ rb_obj_alloc(VALUE klass)
 static VALUE
 rb_class_allocate_instance(VALUE klass)
 {
-    NEWOBJ_OF(obj, struct RObject, klass, T_OBJECT);
+    NEWOBJ_OF(obj, struct RObject, klass, T_OBJECT | (RGENGC_WB_PROTECTED_OBJECT ? FL_WB_PROTECTED : 0));
     return (VALUE)obj;
 }
 
@@ -1801,7 +1869,34 @@ rb_class_superclass(VALUE klass)
 VALUE
 rb_class_get_superclass(VALUE klass)
 {
-    return RCLASS_SUPER(klass);
+    return RCLASS_EXT(klass)->super;
+}
+
+#define id_for_setter(name, type, message) \
+    check_setter_id(name, rb_is_##type##_id, rb_is_##type##_name, message)
+static ID
+check_setter_id(VALUE name, int (*valid_id_p)(ID), int (*valid_name_p)(VALUE),
+		const char *message)
+{
+    ID id;
+    if (SYMBOL_P(name)) {
+	id = SYM2ID(name);
+	if (!valid_id_p(id)) {
+	    rb_name_error(id, message, QUOTE_ID(id));
+	}
+    }
+    else {
+	VALUE str = rb_check_string_type(name);
+	if (NIL_P(str)) {
+	    rb_raise(rb_eTypeError, "%+"PRIsVALUE" is not a symbol or string",
+		     str);
+	}
+	if (!valid_name_p(str)) {
+	    rb_name_error_str(str, message, QUOTE(str));
+	}
+	id = rb_to_id(str);
+    }
+    return id;
 }
 
 /*
@@ -2034,12 +2129,7 @@ rb_mod_const_get(int argc, VALUE *argv, VALUE mod)
 static VALUE
 rb_mod_const_set(VALUE mod, VALUE name, VALUE value)
 {
-    ID id = rb_to_id(name);
-
-    if (!rb_is_const_id(id)) {
-	rb_name_error(id, "wrong constant name %"PRIsVALUE,
-		      QUOTE_ID(id));
-    }
+    ID id = id_for_setter(name, const, "wrong constant name %"PRIsVALUE);
     rb_const_set(mod, id, value);
     return value;
 }
@@ -2157,12 +2247,7 @@ rb_obj_ivar_get(VALUE obj, VALUE iv)
 static VALUE
 rb_obj_ivar_set(VALUE obj, VALUE iv, VALUE val)
 {
-    ID id = rb_to_id(iv);
-
-    if (!rb_is_instance_id(id)) {
-	rb_name_error(id, "`%"PRIsVALUE"' is not allowed as an instance variable name",
-		      QUOTE_ID(id));
-    }
+    ID id = id_for_setter(iv, instance, "`%"PRIsVALUE"' is not allowed as an instance variable name");
     return rb_ivar_set(obj, id, val);
 }
 
@@ -2268,12 +2353,7 @@ rb_mod_cvar_get(VALUE obj, VALUE iv)
 static VALUE
 rb_mod_cvar_set(VALUE obj, VALUE iv, VALUE val)
 {
-    ID id = rb_to_id(iv);
-
-    if (!rb_is_class_id(id)) {
-	rb_name_error(id, "`%"PRIsVALUE"' is not allowed as a class variable name",
-		      QUOTE_ID(id));
-    }
+    ID id = id_for_setter(iv, class, "`%"PRIsVALUE"' is not allowed as a class variable name");
     rb_cvar_set(obj, id, val);
     return val;
 }
@@ -3198,15 +3278,6 @@ Init_Object(void)
      * An alias of +false+
      */
     rb_define_global_const("FALSE", Qfalse);
-
-    id_eq = rb_intern("==");
-    id_eql = rb_intern("eql?");
-    id_match = rb_intern("=~");
-    id_inspect = rb_intern("inspect");
-    id_init_copy = rb_intern("initialize_copy");
-    id_init_clone = rb_intern("initialize_clone");
-    id_init_dup = rb_intern("initialize_dup");
-    id_const_missing = rb_intern("const_missing");
 
     for (i=0; conv_method_names[i].method; i++) {
 	conv_method_names[i].id = rb_intern(conv_method_names[i].method);

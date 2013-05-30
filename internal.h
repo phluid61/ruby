@@ -19,6 +19,38 @@ extern "C" {
 #endif
 #endif
 
+#define GCC_VERSION_SINCE(major, minor, patchlevel) \
+  (defined(__GNUC__) && !defined(__INTEL_COMPILER) && \
+   ((__GNUC__ > (major)) ||  \
+    (__GNUC__ == (major) && __GNUC_MINOR__ > (minor)) || \
+    (__GNUC__ == (major) && __GNUC_MINOR__ == (minor) && __GNUC_PATCHLEVEL__ >= (patchlevel))))
+
+#define SIGNED_INTEGER_TYPE_P(int_type) (0 > ((int_type)0)-1)
+#define SIGNED_INTEGER_MAX(sint_type) \
+  ((((sint_type)1) << (sizeof(sint_type) * CHAR_BIT - 2)) | \
+  ((((sint_type)1) << (sizeof(sint_type) * CHAR_BIT - 2)) - 1))
+#define SIGNED_INTEGER_MIN(sint_type) (-SIGNED_INTEGER_MAX(sint_type)-1)
+#define UNSIGNED_INTEGER_MAX(uint_type) (~(uint_type)0)
+
+#if SIGNEDNESS_OF_TIME_T < 0	/* signed */
+# define TIMET_MAX SIGNED_INTEGER_MAX(time_t)
+# define TIMET_MIN SIGNED_INTEGER_MIN(time_t)
+#elif SIGNEDNESS_OF_TIME_T > 0	/* unsigned */
+# define TIMET_MAX UNSIGNED_INTEGER_MAX(time_t)
+# define TIMET_MIN ((time_t)0)
+#endif
+#define TIMET_MAX_PLUS_ONE (2*(double)(TIMET_MAX/2+1))
+
+#define MUL_OVERFLOW_SIGNED_INTEGER_P(a, b, min, max) ( \
+    (a) == 0 ? 0 : \
+    (a) == -1 ? (b) < -(max) : \
+    (a) > 0 ? \
+      ((b) > 0 ? (max) / (a) < (b) : (min) / (a) > (b)) : \
+      ((b) > 0 ? (min) / (a) < (b) : (max) / (a) > (b)))
+#define MUL_OVERFLOW_FIXNUM_P(a, b) MUL_OVERFLOW_SIGNED_INTEGER_P(a, b, FIXNUM_MIN, FIXNUM_MAX)
+#define MUL_OVERFLOW_LONG_P(a, b) MUL_OVERFLOW_SIGNED_INTEGER_P(a, b, LONG_MIN, LONG_MAX)
+#define MUL_OVERFLOW_INT_P(a, b) MUL_OVERFLOW_SIGNED_INTEGER_P(a, b, INT_MIN, INT_MAX)
+
 struct rb_deprecated_classext_struct {
     char conflict[sizeof(VALUE) * 3];
 };
@@ -32,15 +64,27 @@ struct rb_classext_struct {
     rb_alloc_func_t allocator;
 };
 
-#undef RCLASS_SUPER
 #define RCLASS_EXT(c) (RCLASS(c)->ptr)
-#define RCLASS_SUPER(c) (RCLASS_EXT(c)->super)
 #define RCLASS_IV_TBL(c) (RCLASS_EXT(c)->iv_tbl)
 #define RCLASS_CONST_TBL(c) (RCLASS_EXT(c)->const_tbl)
 #define RCLASS_M_TBL(c) (RCLASS(c)->m_tbl)
 #define RCLASS_IV_INDEX_TBL(c) (RCLASS(c)->iv_index_tbl)
 #define RCLASS_ORIGIN(c) (RCLASS_EXT(c)->origin)
 #define RCLASS_REFINED_CLASS(c) (RCLASS_EXT(c)->refined_class)
+
+#undef RCLASS_SUPER
+static inline VALUE
+RCLASS_SUPER(VALUE c)
+{
+    return RCLASS_EXT(c)->super;
+}
+
+static inline VALUE
+RCLASS_SET_SUPER(VALUE a, VALUE b)
+{
+    OBJ_WRITE(a, &RCLASS_EXT(a)->super, b);
+    return b;
+}
 
 struct vtm; /* defined by timev.h */
 
@@ -64,6 +108,7 @@ VALUE rb_obj_public_methods(int argc, VALUE *argv, VALUE obj);
 int rb_obj_basic_to_s_p(VALUE);
 VALUE rb_special_singleton_class(VALUE);
 VALUE rb_singleton_class_clone_and_attach(VALUE obj, VALUE attach);
+VALUE rb_singleton_class_get(VALUE obj);
 void Init_class_hierarchy(void);
 
 /* compar.c */
@@ -143,6 +188,11 @@ void rb_w32_init_file(void);
 /* gc.c */
 void Init_heap(void);
 void *ruby_mimmalloc(size_t size);
+void rb_objspace_set_event_hook(const rb_event_flag_t event);
+
+/* hash.c */
+struct st_table *rb_hash_tbl_raw(VALUE hash);
+#define RHASH_TBL_RAW(h) rb_hash_tbl_raw(h)
 
 /* inits.c */
 void rb_call_inits(void);
@@ -187,6 +237,18 @@ VALUE rb_int_pred(VALUE num);
 
 /* object.c */
 VALUE rb_obj_equal(VALUE obj1, VALUE obj2);
+
+struct RBasicRaw {
+    VALUE flags;
+    VALUE klass;
+};
+
+#define RBASIC_CLEAR_CLASS(obj)        (((struct RBasicRaw *)((VALUE)(obj)))->klass = 0)
+#define RBASIC_SET_CLASS_RAW(obj, cls) (((struct RBasicRaw *)((VALUE)(obj)))->klass = (cls))
+#define RBASIC_SET_CLASS(obj, cls)     do { \
+    VALUE _obj_ = (obj); \
+    OBJ_WRITE(_obj_, &((struct RBasicRaw *)(_obj_))->klass, cls); \
+} while (0)
 
 /* parse.y */
 VALUE rb_parser_get_yydebug(VALUE);
@@ -327,6 +389,7 @@ VALUE rb_sourcefilename(void);
 
 /* vm_dump.c */
 void rb_vm_bugreport(void);
+void rb_print_backtrace(void);
 
 /* vm_eval.c */
 void Init_vm_eval(void);
@@ -354,9 +417,7 @@ int rb_backtrace_p(VALUE obj);
 VALUE rb_backtrace_to_str_ary(VALUE obj);
 VALUE rb_vm_backtrace_object();
 
-#if defined __GNUC__ && __GNUC__ >= 4
-#pragma GCC visibility push(default)
-#endif
+RUBY_SYMBOL_EXPORT_BEGIN
 const char *rb_objspace_data_type_name(VALUE obj);
 
 /* Temporary.  This API will be removed (renamed). */
@@ -382,9 +443,10 @@ void rb_gc_mark_global_tbl(void);
 void rb_mark_generic_ivar(VALUE);
 void rb_mark_generic_ivar_tbl(void);
 
-#if defined __GNUC__ && __GNUC__ >= 4
-#pragma GCC visibility pop
-#endif
+/* gc.c */
+size_t rb_gc_count();
+
+RUBY_SYMBOL_EXPORT_END
 
 #if defined(__cplusplus)
 #if 0

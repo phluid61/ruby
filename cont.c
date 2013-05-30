@@ -86,13 +86,13 @@ enum fiber_status {
 };
 
 #if FIBER_USE_NATIVE && !defined(_WIN32)
-#define MAX_MAHINE_STACK_CACHE  10
+#define MAX_MACHINE_STACK_CACHE  10
 static int machine_stack_cache_index = 0;
 typedef struct machine_stack_cache_struct {
     void *ptr;
     size_t size;
 } machine_stack_cache_t;
-static machine_stack_cache_t machine_stack_cache[MAX_MAHINE_STACK_CACHE];
+static machine_stack_cache_t machine_stack_cache[MAX_MACHINE_STACK_CACHE];
 static machine_stack_cache_t terminated_machine_stack;
 #endif
 
@@ -1233,7 +1233,7 @@ fiber_store(rb_fiber_t *next_fib)
 	fiber_setcontext(next_fib, fib);
 #ifndef _WIN32
 	if (terminated_machine_stack.ptr) {
-	    if (machine_stack_cache_index < MAX_MAHINE_STACK_CACHE) {
+	    if (machine_stack_cache_index < MAX_MACHINE_STACK_CACHE) {
 		machine_stack_cache[machine_stack_cache_index].ptr = terminated_machine_stack.ptr;
 		machine_stack_cache[machine_stack_cache_index].size = terminated_machine_stack.size;
 		machine_stack_cache_index++;
@@ -1540,9 +1540,7 @@ Init_Cont(void)
     rb_define_method(rb_cFiber, "resume", rb_fiber_m_resume, -1);
 }
 
-#if defined __GNUC__ && __GNUC__ >= 4
-#pragma GCC visibility push(default)
-#endif
+RUBY_SYMBOL_EXPORT_BEGIN
 
 void
 ruby_Init_Continuation_body(void)
@@ -1563,6 +1561,4 @@ ruby_Init_Fiber_as_Coroutine(void)
     rb_define_singleton_method(rb_cFiber, "current", rb_fiber_s_current, 0);
 }
 
-#if defined __GNUC__ && __GNUC__ >= 4
-#pragma GCC visibility pop
-#endif
+RUBY_SYMBOL_EXPORT_END

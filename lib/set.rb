@@ -1,7 +1,7 @@
 #--
 # set.rb - defines the Set class
 #++
-# Copyright (c) 2002-2008 Akinori MUSHA <knu@iDaemons.org>
+# Copyright (c) 2002-2013 Akinori MUSHA <knu@iDaemons.org>
 #
 # Documentation by Akinori MUSHA and Gavin Sinclair.
 #
@@ -272,7 +272,9 @@ class Set
   # true, and returns self.
   def delete_if
     block_given? or return enum_for(__method__)
-    to_a.each { |o| @hash.delete(o) if yield(o) }
+    # @hash.delete_if should be faster, but using it breaks the order
+    # of enumeration in subclasses.
+    select { |o| yield o }.each { |o| @hash.delete(o) }
     self
   end
 
@@ -280,7 +282,9 @@ class Set
   # false, and returns self.
   def keep_if
     block_given? or return enum_for(__method__)
-    to_a.each { |o| @hash.delete(o) unless yield(o) }
+    # @hash.keep_if should be faster, but using it breaks the order of
+    # enumeration in subclasses.
+    reject { |o| yield o }.each { |o| @hash.delete(o) }
     self
   end
 

@@ -649,7 +649,7 @@ StartSockets(void)
     WSADATA retdata;
 
     //
-    // initalize the winsock interface and insure that it's
+    // initialize the winsock interface and insure that it's
     // cleaned up at exit.
     //
     version = MAKEWORD(2, 0);
@@ -1517,8 +1517,8 @@ rb_w32_cmdvector(const char *cmd, char ***vec)
     // When we've finished, and it's an input command (meaning that it's
     // the processes argv), we'll do globing and then build the argument
     // vector.
-    // The outer loop does one interation for each element seen.
-    // The inner loop does one interation for each character in the element.
+    // The outer loop does one iteration for each element seen.
+    // The inner loop does one iteration for each character in the element.
     //
 
     while (*(ptr = skipspace(ptr))) {
@@ -1569,7 +1569,7 @@ rb_w32_cmdvector(const char *cmd, char ***vec)
 		//
 		// if we're already in a string, see if this is the
 		// terminating close-quote. If it is, we're finished with
-		// the string, but not neccessarily with the element.
+		// the string, but not necessarily with the element.
 		// If we're not already in a string, start one.
 		//
 
@@ -1724,8 +1724,6 @@ rb_w32_cmdvector(const char *cmd, char ***vec)
 //
 // UNIX compatible directory access functions for NT
 //
-
-#define PATHLEN 1024
 
 //
 // The idea here is to read all the directory names into a string table
@@ -2589,7 +2587,7 @@ is_not_socket(SOCKET sock)
 
 /* License: Ruby's */
 static int
-is_pipe(SOCKET sock) /* DONT call this for SOCKET! it clains it is PIPE. */
+is_pipe(SOCKET sock) /* DONT call this for SOCKET! it claims it is PIPE. */
 {
     int ret;
 
@@ -3714,7 +3712,7 @@ socketpair_internal(int af, int type, int protocol, SOCKET *sv)
 
 /* License: Ruby's */
 int
-rb_w32_socketpair(int af, int type, int protocol, int *sv)
+socketpair(int af, int type, int protocol, int *sv)
 {
     SOCKET pair[2];
 
@@ -3737,6 +3735,152 @@ rb_w32_socketpair(int af, int type, int protocol, int *sv)
 
     return 0;
 }
+
+#if !defined(_MSC_VER) || _MSC_VER >= 1400
+/* License: Ruby's */
+static void
+str2guid(const char *str, GUID *guid)
+{
+#define hex2byte(str) \
+    ((isdigit(*(str)) ? *(str) - '0' : toupper(*(str)) - 'A' + 10) << 4 | (isdigit(*((str) + 1)) ? *((str) + 1) - '0' : toupper(*((str) + 1)) - 'A' + 10))
+    char *end;
+    int i;
+    if (*str == '{') str++;
+    guid->Data1 = (long)strtoul(str, &end, 16);
+    str += 9;
+    guid->Data2 = (unsigned short)strtoul(str, &end, 16);
+    str += 5;
+    guid->Data3 = (unsigned short)strtoul(str, &end, 16);
+    str += 5;
+    guid->Data4[0] = hex2byte(str);
+    str += 2;
+    guid->Data4[1] = hex2byte(str);
+    str += 3;
+    for (i = 0; i < 6; i++) {
+	guid->Data4[i + 2] = hex2byte(str);
+	str += 2;
+    }
+}
+
+/* License: Ruby's */
+#if !defined(_IFDEF_) && !defined(__MINGW32__)
+    typedef struct {
+	uint64_t Value;
+	struct {
+	    uint64_t Reserved :24;
+	    uint64_t NetLuidIndex :24;
+	    uint64_t IfType :16;
+	} Info;
+    } NET_LUID;
+#endif
+typedef DWORD (WINAPI *cigl_t)(const GUID *, NET_LUID *);
+typedef DWORD (WINAPI *cilnA_t)(const NET_LUID *, char *, size_t);
+static cigl_t pConvertInterfaceGuidToLuid = NULL;
+static cilnA_t pConvertInterfaceLuidToNameA = NULL;
+
+int
+getifaddrs(struct ifaddrs **ifap)
+{
+    ULONG size = 0;
+    ULONG ret;
+    IP_ADAPTER_ADDRESSES *root, *addr;
+    struct ifaddrs *prev;
+
+    ret = GetAdaptersAddresses(AF_UNSPEC, 0, NULL, NULL, &size);
+    if (ret != ERROR_BUFFER_OVERFLOW) {
+	errno = map_errno(ret);
+	return -1;
+    }
+    root = ruby_xmalloc(size);
+    ret = GetAdaptersAddresses(AF_UNSPEC, 0, NULL, root, &size);
+    if (ret != ERROR_SUCCESS) {
+	errno = map_errno(ret);
+	ruby_xfree(root);
+	return -1;
+    }
+
+    if (!pConvertInterfaceGuidToLuid)
+	pConvertInterfaceGuidToLuid =
+	    (cigl_t)get_proc_address("iphlpapi.dll",
+				     "ConvertInterfaceGuidToLuid", NULL);
+    if (!pConvertInterfaceLuidToNameA)
+	pConvertInterfaceLuidToNameA =
+	    (cilnA_t)get_proc_address("iphlpapi.dll",
+				      "ConvertInterfaceLuidToNameA", NULL);
+
+    for (prev = NULL, addr = root; addr; addr = addr->Next) {
+	struct ifaddrs *ifa = ruby_xcalloc(1, sizeof(*ifa));
+	char name[IFNAMSIZ];
+	GUID guid;
+	NET_LUID luid;
+
+	if (prev)
+	    prev->ifa_next = ifa;
+	else
+	    *ifap = ifa;
+
+	str2guid(addr->AdapterName, &guid);
+	if (pConvertInterfaceGuidToLuid && pConvertInterfaceLuidToNameA &&
+	    pConvertInterfaceGuidToLuid(&guid, &luid) == NO_ERROR &&
+	    pConvertInterfaceLuidToNameA(&luid, name, sizeof(name)) == NO_ERROR) {
+	    ifa->ifa_name = ruby_xmalloc(lstrlen(name) + 1);
+	    lstrcpy(ifa->ifa_name, name);
+	}
+	else {
+	    ifa->ifa_name = ruby_xmalloc(lstrlen(addr->AdapterName) + 1);
+	    lstrcpy(ifa->ifa_name, addr->AdapterName);
+	}
+
+	if (addr->IfType & IF_TYPE_SOFTWARE_LOOPBACK)
+	    ifa->ifa_flags |= IFF_LOOPBACK;
+	if (addr->OperStatus == IfOperStatusUp) {
+	    ifa->ifa_flags |= IFF_UP;
+
+	    if (addr->FirstUnicastAddress) {
+		IP_ADAPTER_UNICAST_ADDRESS *cur;
+		int added = 0;
+		for (cur = addr->FirstUnicastAddress; cur; cur = cur->Next) {
+		    if (cur->Flags & IP_ADAPTER_ADDRESS_TRANSIENT ||
+			cur->DadState == IpDadStateDeprecated) {
+			continue;
+		    }
+		    if (added) {
+			prev = ifa;
+			ifa = ruby_xcalloc(1, sizeof(*ifa));
+			prev->ifa_next = ifa;
+			ifa->ifa_name =
+			    ruby_xmalloc(lstrlen(prev->ifa_name) + 1);
+			lstrcpy(ifa->ifa_name, prev->ifa_name);
+			ifa->ifa_flags = prev->ifa_flags;
+		    }
+		    ifa->ifa_addr = ruby_xmalloc(cur->Address.iSockaddrLength);
+		    memcpy(ifa->ifa_addr, cur->Address.lpSockaddr,
+			   cur->Address.iSockaddrLength);
+		    added = 1;
+		}
+	    }
+	}
+
+	prev = ifa;
+    }
+
+    ruby_xfree(root);
+    return 0;
+}
+
+/* License: Ruby's */
+void
+freeifaddrs(struct ifaddrs *ifp)
+{
+    while (ifp) {
+	struct ifaddrs *next = ifp->ifa_next;
+	if (ifp->ifa_addr) ruby_xfree(ifp->ifa_addr);
+	if (ifp->ifa_name) ruby_xfree(ifp->ifa_name);
+	ruby_xfree(ifp);
+	ifp = next;
+    }
+}
+#endif
 
 //
 // Networking stubs
@@ -3886,7 +4030,7 @@ poll_child_status(struct ChildRecord *child, int *stat_loc)
     DWORD err;
 
     if (!GetExitCodeProcess(child->hProcess, &exitcode)) {
-	/* If an error occured, return immediatly. */
+	/* If an error occurred, return immediately. */
     error_exit:
 	err = GetLastError();
 	if (err == ERROR_INVALID_PARAMETER)
@@ -3908,7 +4052,43 @@ poll_child_status(struct ChildRecord *child, int *stat_loc)
         }
 	pid = child->pid;
 	CloseChildHandle(child);
-	if (stat_loc) *stat_loc = exitcode << 8;
+	if (stat_loc) {
+	    *stat_loc = exitcode << 8;
+	    if (exitcode & 0xC0000000) {
+		static const struct {
+		    DWORD status;
+		    int sig;
+		} table[] = {
+		    {STATUS_ACCESS_VIOLATION,        SIGSEGV},
+		    {STATUS_ILLEGAL_INSTRUCTION,     SIGILL},
+		    {STATUS_PRIVILEGED_INSTRUCTION,  SIGILL},
+		    {STATUS_FLOAT_DENORMAL_OPERAND,  SIGFPE},
+		    {STATUS_FLOAT_DIVIDE_BY_ZERO,    SIGFPE},
+		    {STATUS_FLOAT_INEXACT_RESULT,    SIGFPE},
+		    {STATUS_FLOAT_INVALID_OPERATION, SIGFPE},
+		    {STATUS_FLOAT_OVERFLOW,          SIGFPE},
+		    {STATUS_FLOAT_STACK_CHECK,       SIGFPE},
+		    {STATUS_FLOAT_UNDERFLOW,         SIGFPE},
+#ifdef STATUS_FLOAT_MULTIPLE_FAULTS
+		    {STATUS_FLOAT_MULTIPLE_FAULTS,   SIGFPE},
+#endif
+#ifdef STATUS_FLOAT_MULTIPLE_TRAPS
+		    {STATUS_FLOAT_MULTIPLE_TRAPS,    SIGFPE},
+#endif
+		    {STATUS_CONTROL_C_EXIT,          SIGINT},
+		};
+		int i;
+		for (i = 0; i < (int)numberof(table); i++) {
+		    if (table[i].status == exitcode) {
+			*stat_loc |= table[i].sig;
+			break;
+		    }
+		}
+		// if unknown status, assume SEGV
+		if (i >= (int)numberof(table))
+		    *stat_loc |= SIGSEGV;
+	    }
+	}
 	return pid;
     }
     return 0;
@@ -4344,17 +4524,8 @@ wrename(const WCHAR *oldpath, const WCHAR *newpath)
 	if (newatts != -1 && newatts & FILE_ATTRIBUTE_READONLY)
 	    SetFileAttributesW(newpath, newatts & ~ FILE_ATTRIBUTE_READONLY);
 
-	if (!MoveFileW(oldpath, newpath))
+	if (!MoveFileExW(oldpath, newpath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED))
 	    res = -1;
-
-	if (res) {
-	    switch (GetLastError()) {
-	      case ERROR_ALREADY_EXISTS:
-	      case ERROR_FILE_EXISTS:
-		if (MoveFileExW(oldpath, newpath, MOVEFILE_REPLACE_EXISTING))
-		    res = 0;
-	    }
-	}
 
 	if (res)
 	    errno = map_errno(GetLastError());
@@ -4860,38 +5031,6 @@ _lseeki64(int fd, off_t offset, int whence)
     return ((off_t)u << 32) | l;
 }
 #endif
-
-/* License: Ruby's */
-int
-fseeko(FILE *stream, off_t offset, int whence)
-{
-    off_t pos;
-    switch (whence) {
-      case SEEK_CUR:
-	if (fgetpos(stream, (fpos_t *)&pos))
-	    return -1;
-	pos += offset;
-	break;
-      case SEEK_END:
-	if ((pos = _filelengthi64(fileno(stream))) == (off_t)-1)
-	    return -1;
-	pos += offset;
-	break;
-      default:
-	pos = offset;
-	break;
-    }
-    return fsetpos(stream, (fpos_t *)&pos);
-}
-
-/* License: Ruby's */
-off_t
-rb_w32_ftello(FILE *stream)
-{
-    off_t pos;
-    if (fgetpos(stream, (fpos_t *)&pos)) return (off_t)-1;
-    return pos;
-}
 
 /* License: Ruby's */
 static long
@@ -5629,6 +5768,7 @@ constat_attr(int count, const int *seq, WORD attr, WORD default_attr)
 
 	  case 40:
 	    attr &= ~(BACKGROUND_BLUE | BACKGROUND_GREEN | BACKGROUND_RED);
+	    break;
 	  case 41:
 	    attr = attr & ~(BACKGROUND_BLUE | BACKGROUND_GREEN) | BACKGROUND_RED;
 	    break;
@@ -5795,9 +5935,19 @@ constat_parse(HANDLE h, struct constat *s, const WCHAR **ptrp, long *lenp)
 	WCHAR wc = *ptr++;
 	if (wc == 0x1b) {
 	    rest = *lenp - len - 1;
+	    if (s->vt100.state == constat_esc) {
+		rest++;		/* reuse this ESC */
+	    }
+	    s->vt100.state = constat_init;
+	    if (len > 0 && *ptr != L'[') continue;
 	    s->vt100.state = constat_esc;
 	}
-	else if (s->vt100.state == constat_esc && wc == L'[') {
+	else if (s->vt100.state == constat_esc) {
+	    if (wc != L'[') {
+		/* TODO: supply dropped ESC at beginning */
+		s->vt100.state = constat_init;
+		continue;
+	    }
 	    rest = *lenp - len - 1;
 	    if (rest > 0) --rest;
 	    s->vt100.state = constat_seq;
@@ -5866,6 +6016,49 @@ rb_w32_close(int fd)
     return 0;
 }
 
+static int
+setup_overlapped(OVERLAPPED *ol, int fd)
+{
+    memset(ol, 0, sizeof(*ol));
+    if (!(_osfile(fd) & (FDEV | FPIPE))) {
+	LONG high = 0;
+	DWORD method = _osfile(fd) & FAPPEND ? FILE_END : FILE_CURRENT;
+	DWORD low = SetFilePointer((HANDLE)_osfhnd(fd), 0, &high, method);
+#ifndef INVALID_SET_FILE_POINTER
+#define INVALID_SET_FILE_POINTER ((DWORD)-1)
+#endif
+	if (low == INVALID_SET_FILE_POINTER) {
+	    DWORD err = GetLastError();
+	    if (err != NO_ERROR) {
+		errno = map_errno(err);
+		return -1;
+	    }
+	}
+	ol->Offset = low;
+	ol->OffsetHigh = high;
+    }
+    ol->hEvent = CreateEvent(NULL, TRUE, TRUE, NULL);
+    if (!ol->hEvent) {
+	errno = map_errno(GetLastError());
+	return -1;
+    }
+    return 0;
+}
+
+static void
+finish_overlapped(OVERLAPPED *ol, int fd, DWORD size)
+{
+    CloseHandle(ol->hEvent);
+
+    if (!(_osfile(fd) & (FDEV | FPIPE))) {
+	LONG high = ol->OffsetHigh;
+	DWORD low = ol->Offset + size;
+	if (low < ol->Offset)
+	    ++high;
+	SetFilePointer((HANDLE)_osfhnd(fd), low, &high, FILE_BEGIN);
+    }
+}
+
 #undef read
 /* License: Ruby's */
 ssize_t
@@ -5926,25 +6119,7 @@ rb_w32_read(int fd, void *buf, size_t size)
 
     /* if have cancel_io, use Overlapped I/O */
     if (cancel_io) {
-	memset(&ol, 0, sizeof(ol));
-	if (!(_osfile(fd) & (FDEV | FPIPE))) {
-	    LONG high = 0;
-	    DWORD low = SetFilePointer((HANDLE)_osfhnd(fd), 0, &high,
-				       FILE_CURRENT);
-#ifndef INVALID_SET_FILE_POINTER
-#define INVALID_SET_FILE_POINTER ((DWORD)-1)
-#endif
-	    if (low == INVALID_SET_FILE_POINTER) {
-		errno = map_errno(GetLastError());
-		MTHREAD_ONLY(LeaveCriticalSection(&_pioinfo(fd)->lock));
-		return -1;
-	    }
-	    ol.Offset = low;
-	    ol.OffsetHigh = high;
-	}
-	ol.hEvent = CreateEvent(NULL, TRUE, TRUE, NULL);
-	if (!ol.hEvent) {
-	    errno = map_errno(GetLastError());
+	if (setup_overlapped(&ol, fd)) {
 	    MTHREAD_ONLY(LeaveCriticalSection(&_pioinfo(fd)->lock));
 	    return -1;
 	}
@@ -6002,15 +6177,7 @@ rb_w32_read(int fd, void *buf, size_t size)
     }
 
     if (pol) {
-	CloseHandle(ol.hEvent);
-
-	if (!(_osfile(fd) & (FDEV | FPIPE))) {
-	    LONG high = ol.OffsetHigh;
-	    DWORD low = ol.Offset + read;
-	    if (low < ol.Offset)
-		++high;
-	    SetFilePointer((HANDLE)_osfhnd(fd), low, &high, FILE_BEGIN);
-	}
+	finish_overlapped(&ol, fd, read);
     }
 
     ret += read;
@@ -6070,25 +6237,7 @@ rb_w32_write(int fd, const void *buf, size_t size)
 
     /* if have cancel_io, use Overlapped I/O */
     if (cancel_io) {
-	memset(&ol, 0, sizeof(ol));
-	if (!(_osfile(fd) & (FDEV | FPIPE))) {
-	    LONG high = 0;
-	    DWORD method = _osfile(fd) & FAPPEND ? FILE_END : FILE_CURRENT;
-	    DWORD low = SetFilePointer((HANDLE)_osfhnd(fd), 0, &high, method);
-#ifndef INVALID_SET_FILE_POINTER
-#define INVALID_SET_FILE_POINTER ((DWORD)-1)
-#endif
-	    if (low == INVALID_SET_FILE_POINTER) {
-		errno = map_errno(GetLastError());
-		MTHREAD_ONLY(LeaveCriticalSection(&_pioinfo(fd)->lock));
-		return -1;
-	    }
-	    ol.Offset = low;
-	    ol.OffsetHigh = high;
-	}
-	ol.hEvent = CreateEvent(NULL, TRUE, TRUE, NULL);
-	if (!ol.hEvent) {
-	    errno = map_errno(GetLastError());
+	if (setup_overlapped(&ol, fd)) {
 	    MTHREAD_ONLY(LeaveCriticalSection(&_pioinfo(fd)->lock));
 	    return -1;
 	}
@@ -6134,15 +6283,7 @@ rb_w32_write(int fd, const void *buf, size_t size)
     }
 
     if (pol) {
-	CloseHandle(ol.hEvent);
-
-	if (!(_osfile(fd) & (FDEV | FPIPE))) {
-	    LONG high = ol.OffsetHigh;
-	    DWORD low = ol.Offset + written;
-	    if (low < ol.Offset)
-		++high;
-	    SetFilePointer((HANDLE)_osfhnd(fd), low, &high, FILE_BEGIN);
-	}
+	finish_overlapped(&ol, fd, written);
     }
 
     ret += written;

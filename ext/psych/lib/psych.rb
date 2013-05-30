@@ -221,12 +221,6 @@ module Psych
   # The version of libyaml Psych is using
   LIBYAML_VERSION = Psych.libyaml_version.join '.'
 
-  class Exception < RuntimeError
-  end
-
-  class BadAlias < Exception
-  end
-
   ###
   # Load +yaml+ in to a Ruby data structure.  If multiple documents are
   # provided, the object contained in the first document will be returned.
@@ -249,6 +243,55 @@ module Psych
   def self.load yaml, filename = nil
     result = parse(yaml, filename)
     result ? result.to_ruby : result
+  end
+
+  ###
+  # Safely load the yaml string in +yaml+.  By default, only the following
+  # classes are allowed to be deserialized:
+  #
+  # * TrueClass
+  # * FalseClass
+  # * NilClass
+  # * Numeric
+  # * String
+  # * Array
+  # * Hash
+  #
+  # Recursive data structures are not allowed by default.  Arbitrary classes
+  # can be allowed by adding those classes to the +whitelist+.  They are
+  # additive.  For example, to allow Date deserialization:
+  #
+  #   Psych.safe_load(yaml, [Date])
+  #
+  # Now the Date class can be loaded in addition to the classes listed above.
+  #
+  # Aliases can be explicitly allowed by changing the +aliases+ parameter.
+  # For example:
+  #
+  #   x = []
+  #   x << x
+  #   yaml = Psych.dump x
+  #   Psych.safe_load yaml               # => raises an exception
+  #   Psych.safe_load yaml, [], [], true # => loads the aliases
+  #
+  # A Psych::DisallowedClass exception will be raised if the yaml contains a
+  # class that isn't in the whitelist.
+  #
+  # A Psych::BadAlias exception will be raised if the yaml contains aliases
+  # but the +aliases+ parameter is set to false.
+  def self.safe_load yaml, whitelist_classes = [], whitelist_symbols = [], aliases = false, filename = nil
+    result = parse(yaml, filename)
+    return unless result
+
+    class_loader = ClassLoader::Restricted.new(whitelist_classes.map(&:to_s),
+                                               whitelist_symbols.map(&:to_s))
+    scanner      = ScalarScanner.new class_loader
+    if aliases
+      visitor = Visitors::ToRuby.new scanner, class_loader
+    else
+      visitor = Visitors::NoAliasRuby.new scanner, class_loader
+    end
+    visitor.accept result
   end
 
   ###
@@ -361,7 +404,7 @@ module Psych
       io      = nil
     end
 
-    visitor = Psych::Visitors::YAMLTree.new options
+    visitor = Psych::Visitors::YAMLTree.create options
     visitor << o
     visitor.tree.yaml io, options
   end
@@ -373,7 +416,7 @@ module Psych
   #
   #   Psych.dump_stream("foo\n  ", {}) # => "--- ! \"foo\\n  \"\n--- {}\n"
   def self.dump_stream *objects
-    visitor = Psych::Visitors::YAMLTree.new {}
+    visitor = Psych::Visitors::YAMLTree.create({})
     objects.each do |o|
       visitor << o
     end
@@ -381,10 +424,10 @@ module Psych
   end
 
   ###
-  # Dump Ruby object +o+ to a JSON string.
-  def self.to_json o
-    visitor = Psych::Visitors::JSONTree.new
-    visitor << o
+  # Dump Ruby +object+ to a JSON string.
+  def self.to_json object
+    visitor = Psych::Visitors::JSONTree.create
+    visitor << object
     visitor.tree.yaml
   end
 
@@ -441,7 +484,7 @@ module Psych
   @load_tags = {}
   @dump_tags = {}
   def self.add_tag tag, klass
-    @load_tags[tag] = klass
+    @load_tags[tag] = klass.name
     @dump_tags[klass] = tag
   end
 

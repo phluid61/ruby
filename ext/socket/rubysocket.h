@@ -22,7 +22,11 @@
 #  include <xti.h>
 #endif
 
-#ifndef _WIN32
+#ifdef _WIN32
+#  if defined(_MSC_VER)
+#    undef HAVE_TYPE_STRUCT_SOCKADDR_DL
+#  endif
+#else
 #  if defined(__BEOS__) && !defined(__HAIKU__) && !defined(BONE)
 #    include <net/socket.h>
 #  else
@@ -42,6 +46,13 @@
 #    include <arpa/inet.h>
 #  endif
 #  include <netdb.h>
+#endif
+
+#ifdef HAVE_NETPACKET_PACKET_H
+#  include <netpacket/packet.h>
+#endif
+#ifdef HAVE_NET_ETHERNET_H
+#  include <net/ethernet.h>
 #endif
 
 #include <errno.h>
@@ -87,9 +98,28 @@
 #ifdef HAVE_UCRED_H
 #  include <ucred.h>
 #endif
+#ifdef HAVE_NET_IF_DL_H
+#  include <net/if_dl.h>
+#endif
 
 #ifndef HAVE_TYPE_SOCKLEN_T
 typedef int socklen_t;
+#endif
+
+#ifdef NEED_IF_INDEXTONAME_DECL
+char *if_indextoname(unsigned int, char *);
+#endif
+#ifdef NEED_IF_NAMETOINDEX_DECL
+unsigned int if_nametoindex(const char *);
+#endif
+
+#define SOCKLEN_MAX \
+  (0 < (socklen_t)-1 ? \
+   ~(socklen_t)0 : \
+   (((((socklen_t)1) << (sizeof(socklen_t) * CHAR_BIT - 2)) - 1) * 2 + 1))
+
+#ifndef RSTRING_SOCKLEN
+#  define RSTRING_SOCKLEN (socklen_t)RSTRING_LENINT
 #endif
 
 #ifndef EWOULDBLOCK
@@ -160,7 +190,10 @@ typedef union {
 #ifdef HAVE_TYPE_STRUCT_SOCKADDR_UN
   struct sockaddr_un un;
 #endif
-  struct sockaddr_storage storage; 
+#ifdef HAVE_TYPE_STRUCT_SOCKADDR_DL
+  struct sockaddr_dl dl; /* AF_LINK */
+#endif
+  struct sockaddr_storage storage;
   char place_holder[2048]; /* sockaddr_storage is not enough for Unix domain sockets on SunOS and Darwin. */
 } union_sockaddr;
 
@@ -227,8 +260,11 @@ int Rconnect();
 
 #define SockAddrStringValue(v) rsock_sockaddr_string_value(&(v))
 #define SockAddrStringValuePtr(v) rsock_sockaddr_string_value_ptr(&(v))
+#define SockAddrStringValueWithAddrinfo(v, rai_ret) rsock_sockaddr_string_value_with_addrinfo(&(v), &(rai_ret))
 VALUE rsock_sockaddr_string_value(volatile VALUE *);
 char *rsock_sockaddr_string_value_ptr(volatile VALUE *);
+VALUE rsock_sockaddr_string_value_with_addrinfo(volatile VALUE *v, VALUE *ai_ret);
+
 VALUE rb_check_sockaddr_string_type(VALUE);
 
 NORETURN(void rsock_raise_socket_error(const char *, int));
@@ -250,10 +286,14 @@ VALUE rsock_fd_socket_addrinfo(int fd, struct sockaddr *addr, socklen_t len);
 VALUE rsock_io_socket_addrinfo(VALUE io, struct sockaddr *addr, socklen_t len);
 
 VALUE rsock_addrinfo_new(struct sockaddr *addr, socklen_t len, int family, int socktype, int protocol, VALUE canonname, VALUE inspectname);
+VALUE rsock_addrinfo_inspect_sockaddr(VALUE rai);
 
 VALUE rsock_make_ipaddr(struct sockaddr *addr, socklen_t addrlen);
 VALUE rsock_ipaddr(struct sockaddr *sockaddr, socklen_t sockaddrlen, int norevlookup);
 VALUE rsock_make_hostent(VALUE host, struct addrinfo *addr, VALUE (*ipaddr)(struct sockaddr *, socklen_t));
+VALUE rsock_inspect_sockaddr(struct sockaddr *addr, socklen_t socklen, VALUE ret);
+socklen_t rsock_sockaddr_len(struct sockaddr *addr);
+VALUE rsock_sockaddr_obj(struct sockaddr *addr, socklen_t len);
 
 int rsock_revlookup_flag(VALUE revlookup, int *norevlookup);
 
@@ -315,7 +355,7 @@ ssize_t rsock_recvmsg(int socket, struct msghdr *message, int flags);
 #define rsock_bsock_recvmsg_nonblock rb_f_notimplement
 #endif
 
-#ifdef HAVE_ST_MSG_CONTROL
+#ifdef HAVE_STRUCT_MSGHDR_MSG_CONTROL
 void rsock_discard_cmsg_resource(struct msghdr *mh, int msg_peek_p);
 #endif
 
@@ -331,6 +371,13 @@ void rsock_init_socket_constants(void);
 void rsock_init_ancdata(void);
 void rsock_init_addrinfo(void);
 void rsock_init_sockopt(void);
+void rsock_init_sockifaddr(void);
 void rsock_init_socket_init(void);
+
+NORETURN(void rsock_sys_fail_host_port(const char *, VALUE, VALUE));
+NORETURN(void rsock_sys_fail_path(const char *, VALUE));
+NORETURN(void rsock_sys_fail_sockaddr(const char *, struct sockaddr *addr, socklen_t len));
+NORETURN(void rsock_sys_fail_raddrinfo(const char *, VALUE rai));
+NORETURN(void rsock_sys_fail_raddrinfo_or_sockaddr(const char *, VALUE addr, VALUE rai));
 
 #endif

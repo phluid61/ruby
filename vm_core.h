@@ -379,6 +379,8 @@ typedef struct rb_vm_struct {
     /* hook */
     rb_hook_list_t event_hooks;
 
+    struct rb_postponed_job_struct *postponed_job;
+
     int src_encoding_index;
 
     VALUE verbose, debug, progname;
@@ -464,10 +466,14 @@ enum rb_thread_status {
 
 typedef RUBY_JMP_BUF rb_jmpbuf_t;
 
+/*
+  the members which are written in TH_PUSH_TAG() should be placed at
+  the beginning and the end, so that entire region is accessible.
+*/
 struct rb_vm_tag {
-    rb_jmpbuf_t buf;
     VALUE tag;
     VALUE retval;
+    rb_jmpbuf_t buf;
     struct rb_vm_tag *prev;
 };
 
@@ -633,9 +639,7 @@ typedef enum {
     ((x) & VM_DEFINECLASS_FLAG_HAS_SUPERCLASS)
 
 /* iseq.c */
-#if defined __GNUC__ && __GNUC__ >= 4
-#pragma GCC visibility push(default)
-#endif
+RUBY_SYMBOL_EXPORT_BEGIN
 
 /* node -> iseq */
 VALUE rb_iseq_new(NODE*, VALUE, VALUE, VALUE, VALUE, enum iseq_type);
@@ -658,9 +662,7 @@ RUBY_EXTERN VALUE rb_cISeq;
 RUBY_EXTERN VALUE rb_cRubyVM;
 RUBY_EXTERN VALUE rb_cEnv;
 RUBY_EXTERN VALUE rb_mRubyVMFrozenCore;
-#if defined __GNUC__ && __GNUC__ >= 4
-#pragma GCC visibility pop
-#endif
+RUBY_SYMBOL_EXPORT_END
 
 #define GetProcPtr(obj, ptr) \
   GetCoreDataFromValue((obj), rb_proc_t, (ptr))
@@ -816,14 +818,10 @@ extern void rb_vmdebug_debug_print_post(rb_thread_t *th, rb_control_frame_t *cfp
 void rb_vm_bugreport(void);
 
 /* functions about thread/vm execution */
-#if defined __GNUC__ && __GNUC__ >= 4
-#pragma GCC visibility push(default)
-#endif
+RUBY_SYMBOL_EXPORT_BEGIN
 VALUE rb_iseq_eval(VALUE iseqval);
 VALUE rb_iseq_eval_main(VALUE iseqval);
-#if defined __GNUC__ && __GNUC__ >= 4
-#pragma GCC visibility pop
-#endif
+RUBY_SYMBOL_EXPORT_END
 int rb_thread_method_id_and_class(rb_thread_t *th, ID *idp, VALUE *klassp);
 
 VALUE rb_vm_invoke_proc(rb_thread_t *th, rb_proc_t *proc,
@@ -906,15 +904,15 @@ GET_THREAD(void)
 #endif
 
 enum {
-    TIMER_INTERRUPT_MASK	 = 0x01,
-    PENDING_INTERRUPT_MASK = 0x02,
-    FINALIZER_INTERRUPT_MASK     = 0x04,
-    TRAP_INTERRUPT_MASK		 = 0x08
+    TIMER_INTERRUPT_MASK         = 0x01,
+    PENDING_INTERRUPT_MASK       = 0x02,
+    POSTPONED_JOB_INTERRUPT_MASK = 0x04,
+    TRAP_INTERRUPT_MASK	         = 0x08
 };
 
 #define RUBY_VM_SET_TIMER_INTERRUPT(th)		ATOMIC_OR((th)->interrupt_flag, TIMER_INTERRUPT_MASK)
 #define RUBY_VM_SET_INTERRUPT(th)		ATOMIC_OR((th)->interrupt_flag, PENDING_INTERRUPT_MASK)
-#define RUBY_VM_SET_FINALIZER_INTERRUPT(th)	ATOMIC_OR((th)->interrupt_flag, FINALIZER_INTERRUPT_MASK)
+#define RUBY_VM_SET_POSTPONED_JOB_INTERRUPT(th)	ATOMIC_OR((th)->interrupt_flag, POSTPONED_JOB_INTERRUPT_MASK)
 #define RUBY_VM_SET_TRAP_INTERRUPT(th)		ATOMIC_OR((th)->interrupt_flag, TRAP_INTERRUPT_MASK)
 #define RUBY_VM_INTERRUPTED(th) ((th)->interrupt_flag & ~(th)->interrupt_mask & (PENDING_INTERRUPT_MASK|TRAP_INTERRUPT_MASK))
 #define RUBY_VM_INTERRUPTED_ANY(th) ((th)->interrupt_flag & ~(th)->interrupt_mask)
@@ -996,9 +994,7 @@ void rb_threadptr_exec_event_hooks_and_pop_frame(struct rb_trace_arg_struct *tra
 #define EXEC_EVENT_HOOK_AND_POP_FRAME(th_, flag_, self_, id_, klass_, data_) \
   EXEC_EVENT_HOOK_ORIG(th_, flag_, self_, id_, klass_, data_, 1)
 
-#if defined __GNUC__ && __GNUC__ >= 4
-#pragma GCC visibility push(default)
-#endif
+RUBY_SYMBOL_EXPORT_BEGIN
 
 int rb_thread_check_trap_pending(void);
 
@@ -1006,8 +1002,8 @@ extern VALUE rb_get_coverages(void);
 extern void rb_set_coverages(VALUE);
 extern void rb_reset_coverages(void);
 
-#if defined __GNUC__ && __GNUC__ >= 4
-#pragma GCC visibility pop
-#endif
+void rb_postponed_job_flush(rb_vm_t *vm);
+
+RUBY_SYMBOL_EXPORT_END
 
 #endif /* RUBY_VM_CORE_H */

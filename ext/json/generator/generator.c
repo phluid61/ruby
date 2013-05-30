@@ -894,8 +894,8 @@ static int isArrayOrObject(VALUE string)
     long string_len = RSTRING_LEN(string);
     char *p = RSTRING_PTR(string), *q = p + string_len - 1;
     if (string_len < 2) return 0;
-    for (; p < q && isspace(*p); p++);
-    for (; q > p && isspace(*q); q--);
+    for (; p < q && isspace((unsigned char)*p); p++);
+    for (; q > p && isspace((unsigned char)*q); q--);
     return (*p == '[' && *q == ']') || (*p == '{' && *q == '}');
 }
 
@@ -1178,11 +1178,11 @@ static VALUE cState_array_nl_set(VALUE self, VALUE array_nl)
 
 
 /*
-* call-seq: check_circular?
-*
-* Returns true, if circular data structures should be checked,
-* otherwise returns false.
-*/
+ * call-seq: check_circular?
+ *
+ * Returns true, if circular data structures should be checked,
+ * otherwise returns false.
+ */
 static VALUE cState_check_circular_p(VALUE self)
 {
     GET_STATE(self);

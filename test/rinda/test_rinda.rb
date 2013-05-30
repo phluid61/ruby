@@ -50,7 +50,7 @@ class MockClock
   end
 
   def rewind
-    now ,= @ts.take([nil, :now])
+    @ts.take([nil, :now])
     @ts.write([@inf, :now])
     @ts.take([nil, :now])
     @now = 2
@@ -76,7 +76,7 @@ module Time
   module_function :at
 
   def now
-    @m ? @m.now : 2
+    defined?(@m) && @m ? @m.now : 2
   end
   module_function :now
 
@@ -479,12 +479,15 @@ class TupleSpaceProxyTest < Test::Unit::TestCase
   end
 
   def test_take_bug_8215
-    skip 'missing fork' unless have_fork?
+    require_relative '../ruby/envutil'
     service = DRb.start_service(nil, @ts_base)
 
     uri = service.uri
 
-    take = fork do
+    args = [EnvUtil.rubybin, *%W[-rdrb/drb -rdrb/eq -rrinda/ring -rrinda/tuplespace -e]]
+
+    take = spawn(*args, <<-'end;', uri)
+      uri = ARGV[0]
       DRb.start_service
       ro = DRbObject.new_with_uri(uri)
       ts = Rinda::TupleSpaceProxy.new(ro)
@@ -495,24 +498,26 @@ class TupleSpaceProxyTest < Test::Unit::TestCase
       th.raise(Interrupt) # causes loss of the taken tuple
       ts.write([:barrier, :continue])
       Kernel.sleep
-    end
+    end;
 
     @ts_base.take([:barrier, :continue])
 
-    write = fork do
+    write = spawn(*args, <<-'end;', uri)
+      uri = ARGV[0]
       DRb.start_service
       ro = DRbObject.new_with_uri(uri)
       ts = Rinda::TupleSpaceProxy.new(ro)
       ts.write([:test_take, 42])
-    end
+    end;
 
     status = Process.wait(write)
 
     assert_equal([[:test_take, 42]], @ts_base.read_all([:test_take, nil]),
                  '[bug:8215] tuple lost')
   ensure
-    Process.kill("TERM", write) if write && status.nil?
-    Process.kill("TERM", take)  if take
+    signal = /mswin|mingw/ =~ RUBY_PLATFORM ? "KILL" : "TERM"
+    Process.kill(signal, write) if write && status.nil?
+    Process.kill(signal, take)  if take
   end
 
   def have_fork?
@@ -523,6 +528,19 @@ class TupleSpaceProxyTest < Test::Unit::TestCase
   end
 
   @server = DRb.primary_server || DRb.start_service
+end
+
+module RingIPv6
+  def prepare_ipv6(r)
+    Socket.getifaddrs.each do |ifaddr|
+      next unless ifaddr.addr
+      next unless ifaddr.addr.ipv6_linklocal?
+      next if ifaddr.name[0, 2] == "lo"
+      r.multicast_interface = ifaddr.ifindex
+      return
+    end
+    skip 'IPv6 not available'
+  end
 end
 
 class TestRingServer < Test::Unit::TestCase
@@ -555,8 +573,8 @@ class TestRingServer < Test::Unit::TestCase
       assert(v4mc.getsockopt(:SOCKET, :SO_REUSEADDR).bool)
     end
 
-    assert_equal('239.0.0.1', v4mc.local_address.ip_address)
-    assert_equal(@port,       v4mc.local_address.ip_port)
+    assert_equal('0.0.0.0', v4mc.local_address.ip_address)
+    assert_equal(@port,     v4mc.local_address.ip_port)
   end
 
   def test_make_socket_ipv6_multicast
@@ -575,7 +593,43 @@ class TestRingServer < Test::Unit::TestCase
       assert v6mc.getsockopt(:SOCKET, :SO_REUSEADDR).bool
     end
 
-    assert_equal('ff02::1',  v6mc.local_address.ip_address)
+    assert_equal('::1', v6mc.local_address.ip_address)
+    assert_equal(@port, v6mc.local_address.ip_port)
+  end
+
+  def test_ring_server_ipv4_multicast
+    @rs = Rinda::RingServer.new(@ts, [['239.0.0.1', '0.0.0.0']], @port)
+    v4mc = @rs.instance_variable_get('@sockets').first
+
+    if Socket.const_defined?(:SO_REUSEPORT) then
+      assert(v4mc.getsockopt(:SOCKET, :SO_REUSEPORT).bool)
+    else
+      assert(v4mc.getsockopt(:SOCKET, :SO_REUSEADDR).bool)
+    end
+
+    assert_equal('0.0.0.0', v4mc.local_address.ip_address)
+    assert_equal(@port,     v4mc.local_address.ip_port)
+  end
+
+  def test_ring_server_ipv6_multicast
+    skip 'IPv6 not available' unless
+      Socket.ip_address_list.any? { |addrinfo| addrinfo.ipv6? }
+
+    begin
+      @rs = Rinda::RingServer.new(@ts, [['ff02::1', '::1', 0]], @port)
+    rescue Errno::EADDRNOTAVAIL
+      return # IPv6 address for multicast not available
+    end
+
+    v6mc = @rs.instance_variable_get('@sockets').first
+
+    if Socket.const_defined?(:SO_REUSEPORT) then
+      assert v6mc.getsockopt(:SOCKET, :SO_REUSEPORT).bool
+    else
+      assert v6mc.getsockopt(:SOCKET, :SO_REUSEADDR).bool
+    end
+
+    assert_equal('::1', v6mc.local_address.ip_address)
     assert_equal(@port, v6mc.local_address.ip_port)
   end
 
@@ -588,22 +642,10 @@ class TestRingServer < Test::Unit::TestCase
 end
 
 class TestRingFinger < Test::Unit::TestCase
+  include RingIPv6
 
   def setup
     @rf = Rinda::RingFinger.new
-    ifindex = nil
-    10.times do |i|
-      begin
-        addrinfo = Addrinfo.udp('ff02::1', Rinda::Ring_PORT)
-        soc = Socket.new(addrinfo.pfamily, addrinfo.socktype, addrinfo.protocol)
-        soc.setsockopt(:IPPROTO_IPV6, :IPV6_MULTICAST_IF,
-                       [i].pack('I'))
-        ifindex = i
-        break
-      rescue
-      end
-    end
-    @rf.multicast_interface = ifindex
   end
 
   def test_make_socket_unicast
@@ -620,26 +662,23 @@ class TestRingFinger < Test::Unit::TestCase
   end
 
   def test_make_socket_ipv6_multicast
-    skip 'IPv6 not available' unless
-      Socket.ip_address_list.any? { |addrinfo| addrinfo.ipv6? }
-
+    prepare_ipv6(@rf)
     v6mc = @rf.make_socket('ff02::1')
 
     assert_equal(1, v6mc.getsockopt(:IPPROTO_IPV6, :IPV6_MULTICAST_LOOP).int)
     assert_equal(1, v6mc.getsockopt(:IPPROTO_IPV6, :IPV6_MULTICAST_HOPS).int)
   end
 
-  def test_make_socket_multicast_hops
+  def test_make_socket_ipv4_multicast_hops
     @rf.multicast_hops = 2
-
     v4mc = @rf.make_socket('239.0.0.1')
-
     assert_equal(2, v4mc.getsockopt(:IPPROTO_IP, :IP_MULTICAST_TTL).int)
+  end
 
-    return unless Socket.ip_address_list.any? { |addrinfo| addrinfo.ipv6? }
-
+  def test_make_socket_ipv6_multicast_hops
+    prepare_ipv6(@rf)
+    @rf.multicast_hops = 2
     v6mc = @rf.make_socket('ff02::1')
-
     assert_equal(2, v6mc.getsockopt(:IPPROTO_IPV6, :IPV6_MULTICAST_HOPS).int)
   end
 

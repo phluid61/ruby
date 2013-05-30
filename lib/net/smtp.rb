@@ -215,7 +215,7 @@ module Net
       @started = false
       @open_timeout = 30
       @read_timeout = 60
-      @error_occured = false
+      @error_occurred = false
       @debug_output = nil
       @tls = false
       @starttls = false
@@ -362,12 +362,12 @@ module Net
 
     # Seconds to wait while attempting to open a connection.
     # If the connection cannot be opened within this time, a
-    # Net::OpenTimeout is raised.
+    # Net::OpenTimeout is raised. The default value is 30 seconds.
     attr_accessor :open_timeout
 
     # Seconds to wait while reading one block (by one read(2) call).
     # If the read(2) call does not complete within this time, a
-    # Net::ReadTimeout is raised.
+    # Net::ReadTimeout is raised. The default value is 60 seconds.
     attr_reader :read_timeout
 
     # Set the number of seconds to wait until timing-out a read(2)
@@ -605,17 +605,17 @@ module Net
     rescue SMTPError
       if @esmtp
         @esmtp = false
-        @error_occured = false
+        @error_occurred = false
         retry
       end
       raise
     end
 
     def do_finish
-      quit if @socket and not @socket.closed? and not @error_occured
+      quit if @socket and not @socket.closed? and not @error_occurred
     ensure
       @started = false
-      @error_occured = false
+      @error_occurred = false
       @socket.close if @socket and not @socket.closed?
       @socket = nil
     end
@@ -942,11 +942,11 @@ module Net
     end
 
     def critical
-      return '200 dummy reply code' if @error_occured
+      return '200 dummy reply code' if @error_occurred
       begin
         return yield()
       rescue Exception
-        @error_occured = true
+        @error_occurred = true
         raise
       end
     end

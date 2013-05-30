@@ -31,7 +31,7 @@ VALUE rb_cProc;
 static VALUE bmcall(VALUE, VALUE);
 static int method_arity(VALUE);
 static int method_min_max_arity(VALUE, int *max);
-static ID attached;
+#define attached id__attached__
 
 /* Proc */
 
@@ -427,7 +427,7 @@ proc_new(VALUE klass, int is_lambda)
 	}
 	else {
 	    VALUE newprocval = proc_dup(procval);
-	    RBASIC(newprocval)->klass = klass;
+	    RBASIC_SET_CLASS(newprocval, klass);
 	    return newprocval;
 	}
     }
@@ -481,6 +481,14 @@ rb_block_proc(void)
     return proc_new(rb_cProc, FALSE);
 }
 
+/*
+ * call-seq:
+ *   lambda { |...| block }  -> a_proc
+ *
+ * Equivalent to <code>Proc.new</code>, except the resulting Proc objects
+ * check the number of parameters passed when called.
+ */
+
 VALUE
 rb_block_lambda(void)
 {
@@ -491,20 +499,6 @@ VALUE
 rb_f_lambda(void)
 {
     rb_warn("rb_f_lambda() is deprecated; use rb_block_proc() instead");
-    return rb_block_lambda();
-}
-
-/*
- * call-seq:
- *   lambda { |...| block }  -> a_proc
- *
- * Equivalent to <code>Proc.new</code>, except the resulting Proc objects
- * check the number of parameters passed when called.
- */
-
-static VALUE
-proc_lambda(void)
-{
     return rb_block_lambda();
 }
 
@@ -939,20 +933,20 @@ rb_obj_is_method(VALUE m)
 }
 
 static VALUE
-mnew(VALUE klass, VALUE obj, ID id, VALUE mclass, int scope)
+mnew_from_me(rb_method_entry_t *me, VALUE defined_class, VALUE klass,
+	     VALUE obj, ID id, VALUE mclass, int scope)
 {
     VALUE method;
-    VALUE rclass = klass, defined_class;
+    VALUE rclass = klass;
     ID rid = id;
     struct METHOD *data;
-    rb_method_entry_t *me, meb;
+    rb_method_entry_t meb;
     rb_method_definition_t *def = 0;
     rb_method_flag_t flag = NOEX_UNDEF;
 
   again:
-    me = rb_method_entry_without_refinements(klass, id, &defined_class);
     if (UNDEFINED_METHOD_ENTRY_P(me)) {
-	ID rmiss = rb_intern("respond_to_missing?");
+	ID rmiss = idRespond_to_missing;
 	VALUE sym = ID2SYM(id);
 
 	if (obj != Qundef && !rb_method_basic_definition_p(klass, rmiss)) {
@@ -994,6 +988,7 @@ mnew(VALUE klass, VALUE obj, ID id, VALUE mclass, int scope)
     if (def && def->type == VM_METHOD_TYPE_ZSUPER) {
 	klass = RCLASS_SUPER(defined_class);
 	id = def->original_id;
+	me = rb_method_entry_without_refinements(klass, id, &defined_class);
 	goto again;
     }
 
@@ -1025,6 +1020,15 @@ mnew(VALUE klass, VALUE obj, ID id, VALUE mclass, int scope)
     return method;
 }
 
+static VALUE
+mnew(VALUE klass, VALUE obj, ID id, VALUE mclass, int scope)
+{
+    VALUE defined_class;
+    rb_method_entry_t *me =
+	rb_method_entry_without_refinements(klass, id, &defined_class);
+    return mnew_from_me(me, defined_class, klass, obj, id, mclass, scope);
+}
+
 
 /**********************************************************************
  *
@@ -1052,6 +1056,7 @@ mnew(VALUE klass, VALUE obj, ID id, VALUE mclass, int scope)
 
 /*
  * call-seq:
+ *   meth.eql?(other_meth)  -> true or false
  *   meth == other_meth  -> true or false
  *
  * Two method objects are equal if they are bound to the same
@@ -1279,6 +1284,48 @@ rb_obj_public_method(VALUE obj, VALUE vid)
 
 /*
  *  call-seq:
+ *     obj.singleton_method(sym)    -> method
+ *
+ *  Similar to _method_, searches singleton method only.
+ *
+ *     class Demo
+ *       def initialize(n)
+ *         @iv = n
+ *       end
+ *       def hello()
+ *         "Hello, @iv = #{@iv}"
+ *       end
+ *     end
+ *
+ *     k = Demo.new(99)
+ *     def k.hi
+ *       "Hi, @iv = #{@iv}"
+ *     end
+ *     m = k.singleton_method(:hi)
+ *     m.call   #=> "Hi, @iv = 99"
+ *     m = k.singleton_method(:hello) #=> NameError
+ */
+
+VALUE
+rb_obj_singleton_method(VALUE obj, VALUE vid)
+{
+    rb_method_entry_t *me;
+    VALUE klass;
+    ID id = rb_check_id(&vid);
+    if (!id) {
+	rb_name_error_str(vid, "undefined singleton method `%"PRIsVALUE"' for `%"PRIsVALUE"'",
+			  QUOTE(vid), obj);
+    }
+    if (NIL_P(klass = rb_singleton_class_get(obj)) ||
+	!(me = rb_method_entry_at(klass, id))) {
+	rb_name_error(id, "undefined singleton method `%"PRIsVALUE"' for `%"PRIsVALUE"'",
+		      QUOTE_ID(id), obj);
+    }
+    return mnew_from_me(me, klass, klass, obj, id, rb_cMethod, FALSE);
+}
+
+/*
+ *  call-seq:
  *     mod.instance_method(symbol)   -> unbound_method
  *
  *  Returns an +UnboundMethod+ representing the given
@@ -1377,7 +1424,7 @@ rb_mod_define_method(int argc, VALUE *argv, VALUE mod)
 {
     ID id;
     VALUE body;
-    int noex = NOEX_PUBLIC;
+    int noex = (int)rb_vm_cref()->nd_visi;
 
     if (argc == 1) {
 	id = rb_to_id(argv[0]);
@@ -1410,6 +1457,9 @@ rb_mod_define_method(int argc, VALUE *argv, VALUE mod)
 	    }
 	}
 	rb_method_entry_set(mod, id, method->me, noex);
+	if (noex == NOEX_MODFUNC) {
+	    rb_method_entry_set(rb_singleton_class(mod), id, method->me, NOEX_PUBLIC);
+	}
     }
     else if (rb_obj_is_proc(body)) {
 	rb_proc_t *proc;
@@ -1423,6 +1473,9 @@ rb_mod_define_method(int argc, VALUE *argv, VALUE mod)
 	    proc->block.klass = mod;
 	}
 	rb_add_method(mod, id, VM_METHOD_TYPE_BMETHOD, (void *)body, noex);
+	if (noex == NOEX_MODFUNC) {
+	    rb_add_method(rb_singleton_class(mod), id, VM_METHOD_TYPE_BMETHOD, (void *)body, NOEX_PUBLIC);
+	}
     }
     else {
 	/* type error */
@@ -1738,6 +1791,7 @@ rb_method_entry_min_max_arity(const rb_method_entry_t *me, int *max)
 	  default:
 	    break;
 	}
+	break;
       }
       case VM_METHOD_TYPE_REFINED:
 	*max = UNLIMITED_ARGUMENTS;
@@ -1999,13 +2053,13 @@ method_inspect(VALUE method)
 static VALUE
 mproc(VALUE method)
 {
-    return rb_funcall(Qnil, rb_intern("proc"), 0);
+    return rb_funcall2(rb_mRubyVMFrozenCore, idProc, 0, 0);
 }
 
 static VALUE
 mlambda(VALUE method)
 {
-    return rb_funcall(Qnil, rb_intern("lambda"), 0);
+    return rb_funcall(rb_mRubyVMFrozenCore, idLambda, 0, 0);
 }
 
 static VALUE
@@ -2155,9 +2209,9 @@ static VALUE
 curry(VALUE dummy, VALUE args, int argc, VALUE *argv, VALUE passed_proc)
 {
     VALUE proc, passed, arity;
-    proc = RARRAY_PTR(args)[0];
-    passed = RARRAY_PTR(args)[1];
-    arity = RARRAY_PTR(args)[2];
+    proc = RARRAY_AREF(args, 0);
+    passed = RARRAY_AREF(args, 1);
+    arity = RARRAY_AREF(args, 2);
 
     passed = rb_ary_plus(passed, rb_ary_new4(argc, argv));
     rb_ary_freeze(passed);
@@ -2346,7 +2400,7 @@ Init_Proc(void)
 
     /* utility functions */
     rb_define_global_function("proc", rb_block_proc, 0);
-    rb_define_global_function("lambda", proc_lambda, 0);
+    rb_define_global_function("lambda", rb_block_lambda, 0);
 
     /* Method */
     rb_cMethod = rb_define_class("Method", rb_cObject);
@@ -2371,6 +2425,7 @@ Init_Proc(void)
     rb_define_method(rb_cMethod, "parameters", rb_method_parameters, 0);
     rb_define_method(rb_mKernel, "method", rb_obj_method, 1);
     rb_define_method(rb_mKernel, "public_method", rb_obj_public_method, 1);
+    rb_define_method(rb_mKernel, "singleton_method", rb_obj_singleton_method, 1);
 
     /* UnboundMethod */
     rb_cUnboundMethod = rb_define_class("UnboundMethod", rb_cObject);
@@ -2447,6 +2502,5 @@ Init_Binding(void)
     rb_define_method(rb_cBinding, "dup", binding_dup, 0);
     rb_define_method(rb_cBinding, "eval", bind_eval, -1);
     rb_define_global_function("binding", rb_f_binding, 0);
-    attached = rb_intern("__attached__");
 }
 
