@@ -577,7 +577,7 @@ vm_setivar(VALUE obj, ID id, VALUE val, IC ic, rb_call_info_t *ci, int is_attr)
 	    VALUE *ptr = ROBJECT_IVPTR(obj);
 
 	    if (index < len) {
-		ptr[index] = val;
+		OBJ_WRITE(obj, &ptr[index], val);
 		return val; /* inline cache hit */
 	    }
 	}
@@ -1070,24 +1070,56 @@ vm_caller_setup_args(const rb_thread_t *th, rb_control_frame_t *cfp, rb_call_inf
     }
 }
 
+static int
+separate_symbol(st_data_t key, st_data_t value, st_data_t arg)
+{
+    VALUE *kwdhash = (VALUE *)arg;
+
+    if (!SYMBOL_P(key)) kwdhash++;
+    if (!*kwdhash) *kwdhash = rb_hash_new();
+    rb_hash_aset(*kwdhash, (VALUE)key, (VALUE)value);
+    return ST_CONTINUE;
+}
+
+static VALUE
+extract_keywords(VALUE *orighash)
+{
+    VALUE parthash[2] = {0, 0};
+    VALUE hash = *orighash;
+
+    if (RHASH_EMPTY_P(hash)) {
+	*orighash = 0;
+	return hash;
+    }
+    st_foreach(rb_hash_tbl_raw(hash), separate_symbol, (st_data_t)&parthash);
+    *orighash = parthash[1];
+    return parthash[0];
+}
+
 static inline int
 vm_callee_setup_keyword_arg(const rb_iseq_t *iseq, int argc, VALUE *orig_argv, VALUE *kwd)
 {
-    VALUE keyword_hash;
+    VALUE keyword_hash, orig_hash;
     int i, j;
 
     if (argc > 0 &&
-	!NIL_P(keyword_hash = rb_check_hash_type(orig_argv[argc-1]))) {
-	argc--;
-	keyword_hash = rb_hash_dup(keyword_hash);
+	!NIL_P(orig_hash = rb_check_hash_type(orig_argv[argc-1])) &&
+	(keyword_hash = extract_keywords(&orig_hash)) != 0) {
+	if (!orig_hash) {
+	    argc--;
+	}
+	else {
+	    orig_argv[argc-1] = orig_hash;
+	}
 	i = 0;
 	if (iseq->arg_keyword_required) {
 	    VALUE missing = Qnil;
 	    for (; i < iseq->arg_keyword_required; i++) {
-		if (st_lookup(RHASH_TBL(keyword_hash), ID2SYM(iseq->arg_keyword_table[i]), 0))
+		VALUE keyword = ID2SYM(iseq->arg_keyword_table[i]);
+		if (st_lookup(rb_hash_tbl_raw(keyword_hash), (st_data_t)keyword, 0))
 		    continue;
 		if (NIL_P(missing)) missing = rb_ary_tmp_new(1);
-		rb_ary_push(missing, ID2SYM(iseq->arg_keyword_table[i]));
+		rb_ary_push(missing, keyword);
 	    }
 	    if (!NIL_P(missing)) {
 		keyword_error("missing", missing);
@@ -1095,9 +1127,9 @@ vm_callee_setup_keyword_arg(const rb_iseq_t *iseq, int argc, VALUE *orig_argv, V
 	}
 	if (iseq->arg_keyword_check) {
 	    for (j = i; i < iseq->arg_keywords; i++) {
-		if (st_lookup(RHASH_TBL(keyword_hash), ID2SYM(iseq->arg_keyword_table[i]), 0)) j++;
+		if (st_lookup(rb_hash_tbl_raw(keyword_hash), ID2SYM(iseq->arg_keyword_table[i]), 0)) j++;
 	    }
-	    if (RHASH_TBL(keyword_hash)->num_entries > (unsigned int) j) {
+	    if (RHASH_SIZE(keyword_hash) > (unsigned int)j) {
 		unknown_keyword_error(iseq, keyword_hash);
 	    }
 	}
@@ -1922,7 +1954,7 @@ vm_super_outside(void)
     rb_raise(rb_eNoMethodError, "super called outside of method");
 }
 
-static void
+static int
 vm_search_superclass(rb_control_frame_t *reg_cfp, rb_iseq_t *iseq, VALUE sigval, rb_call_info_t *ci)
 {
     while (iseq && !iseq->klass) {
@@ -1930,7 +1962,7 @@ vm_search_superclass(rb_control_frame_t *reg_cfp, rb_iseq_t *iseq, VALUE sigval,
     }
 
     if (iseq == 0) {
-	vm_super_outside();
+	return -1;
     }
 
     ci->mid = iseq->defined_method_id;
@@ -1941,7 +1973,7 @@ vm_search_superclass(rb_control_frame_t *reg_cfp, rb_iseq_t *iseq, VALUE sigval,
 
 	if (!sigval) {
 	    /* zsuper */
-	    rb_raise(rb_eRuntimeError, "implicit argument passing of super from method defined by define_method() is not supported. Specify all arguments explicitly.");
+	    return -2;
 	}
 
 	while (lcfp->iseq != iseq) {
@@ -1950,7 +1982,7 @@ vm_search_superclass(rb_control_frame_t *reg_cfp, rb_iseq_t *iseq, VALUE sigval,
 	    while (1) {
 		lcfp = RUBY_VM_PREVIOUS_CONTROL_FRAME(lcfp);
 		if (RUBY_VM_CONTROL_FRAME_STACK_OVERFLOW_P(th, lcfp)) {
-		    vm_super_outside();
+		    return -1;
 		}
 		if (lcfp->ep == tep) {
 		    break;
@@ -1960,7 +1992,7 @@ vm_search_superclass(rb_control_frame_t *reg_cfp, rb_iseq_t *iseq, VALUE sigval,
 
 	/* temporary measure for [Bug #2420] [Bug #3136] */
 	if (!lcfp->me) {
-	    vm_super_outside();
+	    return -1;
 	}
 
 	ci->mid = lcfp->me->def->original_id;
@@ -1969,6 +2001,8 @@ vm_search_superclass(rb_control_frame_t *reg_cfp, rb_iseq_t *iseq, VALUE sigval,
     else {
 	ci->klass = vm_search_normal_superclass(reg_cfp->klass);
     }
+
+    return 0;
 }
 
 static void
@@ -1998,7 +2032,15 @@ vm_search_super_method(rb_thread_t *th, rb_control_frame_t *reg_cfp, rb_call_inf
 		 rb_obj_classname(ci->recv), rb_class2name(m));
     }
 
-    vm_search_superclass(GET_CFP(), iseq, sigval, ci);
+    switch (vm_search_superclass(GET_CFP(), iseq, sigval, ci)) {
+      case -1:
+	vm_super_outside();
+      case -2:
+	rb_raise(rb_eRuntimeError,
+		 "implicit argument passing of super from method defined"
+		 " by define_method() is not supported."
+		 " Specify all arguments explicitly.");
+    }
 
     /* TODO: use inline cache */
     ci->me = rb_method_entry(ci->klass, ci->mid, &ci->defined_class);

@@ -32,15 +32,9 @@ extern "C" {
 # include <varargs.h>
 #endif
 
-#if defined(HAVE_SYS_TYPES_H)
-#include <sys/types.h>
-#endif
-
 #include "ruby/st.h"
 
-#if defined __GNUC__ && __GNUC__ >= 4
-#pragma GCC visibility push(default)
-#endif
+RUBY_SYMBOL_EXPORT_BEGIN
 
 /*
  * Functions and variables that are used by more than one source file of
@@ -99,10 +93,6 @@ VALUE rb_big_clone(VALUE);
 void rb_big_2comp(VALUE);
 VALUE rb_big_norm(VALUE);
 void rb_big_resize(VALUE big, long len);
-VALUE rb_uint2big(VALUE);
-VALUE rb_int2big(SIGNED_VALUE);
-VALUE rb_uint2inum(VALUE);
-VALUE rb_int2inum(SIGNED_VALUE);
 VALUE rb_cstr_to_inum(const char*, int, int);
 VALUE rb_str_to_inum(VALUE, int, int);
 VALUE rb_cstr2inum(const char*, int);
@@ -115,8 +105,6 @@ VALUE rb_big2ulong(VALUE);
 #define rb_big2uint(x) rb_big2ulong(x)
 VALUE rb_big2ulong_pack(VALUE x);
 #if HAVE_LONG_LONG
-VALUE rb_ll2inum(LONG_LONG);
-VALUE rb_ull2inum(unsigned LONG_LONG);
 LONG_LONG rb_big2ll(VALUE);
 unsigned LONG_LONG rb_big2ull(VALUE);
 #endif  /* HAVE_LONG_LONG */
@@ -168,7 +156,6 @@ VALUE rb_Complex(VALUE, VALUE);
 VALUE rb_class_boot(VALUE);
 VALUE rb_class_new(VALUE);
 VALUE rb_mod_init_copy(VALUE, VALUE);
-VALUE rb_class_init_copy(VALUE, VALUE);
 VALUE rb_singleton_class_clone(VALUE);
 void rb_singleton_class_attached(VALUE,VALUE);
 VALUE rb_make_metaclass(VALUE, VALUE);
@@ -382,7 +369,7 @@ VALUE rb_require_safe(VALUE, int);
 void rb_obj_call_init(VALUE, int, VALUE*);
 VALUE rb_class_new_instance(int, VALUE*, VALUE);
 VALUE rb_block_proc(void);
-VALUE rb_f_lambda(void);
+VALUE rb_block_lambda(void);
 VALUE rb_proc_new(VALUE (*)(ANYARGS/* VALUE yieldarg[, VALUE procarg] */), VALUE);
 VALUE rb_obj_is_proc(VALUE);
 VALUE rb_proc_call(VALUE, VALUE);
@@ -473,6 +460,7 @@ VALUE rb_hash_aset(VALUE, VALUE, VALUE);
 VALUE rb_hash_clear(VALUE);
 VALUE rb_hash_delete_if(VALUE);
 VALUE rb_hash_delete(VALUE,VALUE);
+VALUE rb_hash_set_ifnone(VALUE hash, VALUE ifnone);
 typedef VALUE rb_hash_update_func(VALUE newkey, VALUE oldkey, VALUE value);
 VALUE rb_hash_update_by(VALUE hash1, VALUE hash2, rb_hash_update_func *func);
 struct st_table *rb_hash_tbl(VALUE);
@@ -877,8 +865,6 @@ VALUE rb_ivar_set(VALUE, ID, VALUE);
 VALUE rb_ivar_defined(VALUE, ID);
 void rb_ivar_foreach(VALUE, int (*)(ANYARGS), st_data_t);
 st_index_t rb_ivar_count(VALUE);
-VALUE rb_iv_set(VALUE, const char*, VALUE);
-VALUE rb_iv_get(VALUE, const char*);
 VALUE rb_attr_get(VALUE, ID);
 VALUE rb_obj_instance_variables(VALUE);
 VALUE rb_obj_remove_instance_variable(VALUE, VALUE);
@@ -913,9 +899,7 @@ int rb_frame_method_id_and_class(ID *idp, VALUE *klassp);
 VALUE rb_make_backtrace(void);
 VALUE rb_make_exception(int, VALUE*);
 
-#if defined __GNUC__ && __GNUC__ >= 4
-#pragma GCC visibility pop
-#endif
+RUBY_SYMBOL_EXPORT_END
 
 #if defined(__cplusplus)
 #if 0

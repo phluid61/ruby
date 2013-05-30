@@ -89,32 +89,32 @@ setup_passwd(struct passwd *pwd)
     if (pwd == 0) rb_sys_fail("/etc/passwd");
     return rb_struct_new(sPasswd,
 			 safe_setup_str(pwd->pw_name),
-#ifdef HAVE_ST_PW_PASSWD
+#ifdef HAVE_STRUCT_PASSWD_PW_PASSWD
 			 safe_setup_str(pwd->pw_passwd),
 #endif
 			 UIDT2NUM(pwd->pw_uid),
 			 GIDT2NUM(pwd->pw_gid),
-#ifdef HAVE_ST_PW_GECOS
+#ifdef HAVE_STRUCT_PASSWD_PW_GECOS
 			 safe_setup_str(pwd->pw_gecos),
 #endif
 			 safe_setup_str(pwd->pw_dir),
 			 safe_setup_str(pwd->pw_shell),
-#ifdef HAVE_ST_PW_CHANGE
+#ifdef HAVE_STRUCT_PASSWD_PW_CHANGE
 			 INT2NUM(pwd->pw_change),
 #endif
-#ifdef HAVE_ST_PW_QUOTA
+#ifdef HAVE_STRUCT_PASSWD_PW_QUOTA
 			 INT2NUM(pwd->pw_quota),
 #endif
-#ifdef HAVE_ST_PW_AGE
+#ifdef HAVE_STRUCT_PASSWD_PW_AGE
 			 PW_AGE2VAL(pwd->pw_age),
 #endif
-#ifdef HAVE_ST_PW_CLASS
+#ifdef HAVE_STRUCT_PASSWD_PW_CLASS
 			 safe_setup_str(pwd->pw_class),
 #endif
-#ifdef HAVE_ST_PW_COMMENT
+#ifdef HAVE_STRUCT_PASSWD_PW_COMMENT
 			 safe_setup_str(pwd->pw_comment),
 #endif
-#ifdef HAVE_ST_PW_EXPIRE
+#ifdef HAVE_STRUCT_PASSWD_PW_EXPIRE
 			 INT2NUM(pwd->pw_expire),
 #endif
 			 0		/*dummy*/
@@ -137,7 +137,7 @@ setup_passwd(struct passwd *pwd)
  * === Example:
  *
  *	Etc.getpwuid(0)
- *	#=> #<struct Struct::Passwd name="root", passwd="x", uid=0, gid=0, gecos="root",dir="/root", shell="/bin/bash">
+ *	#=> #<struct Etc::Passwd name="root", passwd="x", uid=0, gid=0, gecos="root",dir="/root", shell="/bin/bash">
  */
 static VALUE
 etc_getpwuid(int argc, VALUE *argv, VALUE obj)
@@ -175,7 +175,7 @@ etc_getpwuid(int argc, VALUE *argv, VALUE obj)
  * === Example:
  *
  *	Etc.getpwnam('root')
- *	#=> #<struct Struct::Passwd name="root", passwd="x", uid=0, gid=0, gecos="root",dir="/root", shell="/bin/bash">
+ *	#=> #<struct Etc::Passwd name="root", passwd="x", uid=0, gid=0, gecos="root",dir="/root", shell="/bin/bash">
  */
 static VALUE
 etc_getpwnam(VALUE obj, VALUE nam)
@@ -359,7 +359,7 @@ setup_group(struct group *grp)
     }
     return rb_struct_new(sGroup,
 			 safe_setup_str(grp->gr_name),
-#ifdef HAVE_ST_GR_PASSWD
+#ifdef HAVE_STRUCT_GROUP_GR_PASSWD
 			 safe_setup_str(grp->gr_passwd),
 #endif
 			 GIDT2NUM(grp->gr_gid),
@@ -380,7 +380,7 @@ setup_group(struct group *grp)
  * === Example:
  *
  *	Etc.getgrgid(100)
- *	#=> #<struct Struct::Group name="users", passwd="x", gid=100, mem=["meta", "root"]>
+ *	#=> #<struct Etc::Group name="users", passwd="x", gid=100, mem=["meta", "root"]>
  *
  */
 static VALUE
@@ -419,7 +419,7 @@ etc_getgrgid(int argc, VALUE *argv, VALUE obj)
  * === Example:
  *
  *	Etc.getgrnam('users')
- *	#=> #<struct Struct::Group name="users", passwd="x", gid=100, mem=["meta", "root"]>
+ *	#=> #<struct Etc::Group name="users", passwd="x", gid=100, mem=["meta", "root"]>
  *
  */
 static VALUE
@@ -678,28 +678,28 @@ Init_etc(void)
     rb_define_module_function(mEtc, "sysconfdir", etc_sysconfdir, 0);
     rb_define_module_function(mEtc, "systmpdir", etc_systmpdir, 0);
 
-    sPasswd =  rb_struct_define("Passwd",
+    sPasswd =  rb_struct_define(NULL,
 				"name", "passwd", "uid", "gid",
-#ifdef HAVE_ST_PW_GECOS
+#ifdef HAVE_STRUCT_PASSWD_PW_GECOS
 				"gecos",
 #endif
 				"dir", "shell",
-#ifdef HAVE_ST_PW_CHANGE
+#ifdef HAVE_STRUCT_PASSWD_PW_CHANGE
 				"change",
 #endif
-#ifdef HAVE_ST_PW_QUOTA
+#ifdef HAVE_STRUCT_PASSWD_PW_QUOTA
 				"quota",
 #endif
-#ifdef HAVE_ST_PW_AGE
+#ifdef HAVE_STRUCT_PASSWD_PW_AGE
 				"age",
 #endif
-#ifdef HAVE_ST_PW_CLASS
+#ifdef HAVE_STRUCT_PASSWD_PW_CLASS
 				"uclass",
 #endif
-#ifdef HAVE_ST_PW_COMMENT
+#ifdef HAVE_STRUCT_PASSWD_PW_COMMENT
 				"comment",
 #endif
-#ifdef HAVE_ST_PW_EXPIRE
+#ifdef HAVE_STRUCT_PASSWD_PW_EXPIRE
 				"expire",
 #endif
 				NULL);
@@ -728,27 +728,29 @@ Init_etc(void)
      *     contains a longer String description of the user, such as
      *	   a full name. Some Unix systems provide structured information in the
      *     gecos field, but this is system-dependent.
-     *     must be compiled with +HAVE_ST_PW_GECOS+
+     *     must be compiled with +HAVE_STRUCT_PASSWD_PW_GECOS+
      * change::
-     *     password change time(integer) must be compiled with +HAVE_ST_PW_CHANGE+
+     *     password change time(integer) must be compiled with +HAVE_STRUCT_PASSWD_PW_CHANGE+
      * quota::
-     *     quota value(integer) must be compiled with +HAVE_ST_PW_QUOTA+
+     *     quota value(integer) must be compiled with +HAVE_STRUCT_PASSWD_PW_QUOTA+
      * age::
-     *     password age(integer) must be compiled with +HAVE_ST_PW_AGE+
+     *     password age(integer) must be compiled with +HAVE_STRUCT_PASSWD_PW_AGE+
      * class::
-     *     user access class(string) must be compiled with +HAVE_ST_PW_CLASS+
+     *     user access class(string) must be compiled with +HAVE_STRUCT_PASSWD_PW_CLASS+
      * comment::
-     *     comment(string) must be compiled with +HAVE_ST_PW_COMMENT+
+     *     comment(string) must be compiled with +HAVE_STRUCT_PASSWD_PW_COMMENT+
      * expire::
-     *	    account expiration time(integer) must be compiled with +HAVE_ST_PW_EXPIRE+
+     *	    account expiration time(integer) must be compiled with +HAVE_STRUCT_PASSWD_PW_EXPIRE+
      */
     rb_define_const(mEtc, "Passwd", sPasswd);
+    rb_set_class_path(sPasswd, mEtc, "Passwd");
+    rb_define_const(rb_cStruct, "Passwd", sPasswd); /* deprecated name */
     rb_extend_object(sPasswd, rb_mEnumerable);
     rb_define_singleton_method(sPasswd, "each", etc_each_passwd, 0);
 
 #ifdef HAVE_GETGRENT
-    sGroup = rb_struct_define("Group", "name",
-#ifdef HAVE_ST_GR_PASSWD
+    sGroup = rb_struct_define(NULL, "name",
+#ifdef HAVE_STRUCT_GROUP_GR_PASSWD
 			      "passwd",
 #endif
 			      "gid", "mem", NULL);
@@ -767,7 +769,7 @@ Init_etc(void)
      *	    string is returned if no password is needed to obtain membership of
      *	    the group.
      *
-     *	    Must be compiled with +HAVE_ST_GR_PASSWD+.
+     *	    Must be compiled with +HAVE_STRUCT_GROUP_GR_PASSWD+.
      * gid::
      *	    contains the group's numeric ID as an integer.
      * mem::
@@ -775,6 +777,8 @@ Init_etc(void)
      *	    members of the group.
      */
     rb_define_const(mEtc, "Group", sGroup);
+    rb_set_class_path(sGroup, mEtc, "Group");
+    rb_define_const(rb_cStruct, "Group", sGroup); /* deprecated name */
     rb_extend_object(sGroup, rb_mEnumerable);
     rb_define_singleton_method(sGroup, "each", etc_each_group, 0);
 #endif

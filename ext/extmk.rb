@@ -1,6 +1,7 @@
 #! /usr/local/bin/ruby
 # -*- mode: ruby; coding: us-ascii -*-
 
+# :stopdoc:
 $extension = nil
 $extstatic = nil
 $force_static = nil
@@ -104,7 +105,9 @@ def extract_makefile(makefile, keep = true)
     /^STATIC_LIB[ \t]*=[ \t]*\S+/ =~ m or $static = false
   end
   $preload = Shellwords.shellwords(m[/^preload[ \t]*=[ \t]*(.*)/, 1] || "")
-  $DLDFLAGS += " " + (m[/^dldflags[ \t]*=[ \t]*(.*)/, 1] || "")
+  if dldflags = m[/^dldflags[ \t]*=[ \t]*(.*)/, 1] and !$DLDFLAGS.include?(dldflags)
+    $DLDFLAGS += " " + dldflags
+  end
   if s = m[/^LIBS[ \t]*=[ \t]*(.*)/, 1]
     s.sub!(/^#{Regexp.quote($LIBRUBYARG)} */, "")
     s.sub!(/ *#{Regexp.quote($LIBS)}$/, "")
@@ -144,6 +147,8 @@ def extmake(target)
     $srcs = []
     $compiled[target] = false
     makefile = "./Makefile"
+    static = $static
+    $static = nil if noinstall = File.fnmatch?("-*", target)
     ok = File.exist?(makefile)
     unless $ignore
       rbconfig0 = RbConfig::CONFIG
@@ -193,19 +198,11 @@ def extmake(target)
 	  Logging::logfile 'mkmf.log'
 	  rm_f makefile
 	  if conf
-            stdout = $stdout.dup
-            stderr = $stderr.dup
-            unless verbose?
-              $stderr.reopen($stdout.reopen(@null))
-            end
-            begin
+            Logging.open do
+              unless verbose?
+                $stderr.reopen($stdout.reopen(@null))
+              end
               load $0 = conf
-            ensure
-              Logging::log_close
-              $stderr.reopen(stderr)
-              $stdout.reopen(stdout)
-              stdout.close
-              stderr.close
             end
 	  else
 	    create_makefile(target)
@@ -224,8 +221,15 @@ def extmake(target)
     end
     ok &&= File.open(makefile){|f| !f.gets[DUMMY_SIGNATURE]}
     ok = yield(ok) if block_given?
-    unless ok
-      open(makefile, "w") do |f|
+    if ok
+      open(makefile, "r+b") do |f|
+        s = f.read.sub!(/^(static:)\s(?!all\b).*/, '\1 all') or break
+        f.rewind
+        f.print(s)
+        f.truncate(f.pos)
+      end
+    else
+      open(makefile, "wb") do |f|
         f.puts "# " + DUMMY_SIGNATURE
 	f.print(*dummy_makefile(CONFIG["srcdir"]))
       end
@@ -235,7 +239,7 @@ def extmake(target)
         mess = "#{error}\n#{mess}"
       end
 
-      Logging::message(mess)
+      Logging::message(mess) if Logging.log_opened?
       print(mess)
       $stdout.flush
       return true
@@ -244,7 +248,7 @@ def extmake(target)
     unless $destdir.to_s.empty? or $mflags.defined?("DESTDIR")
       args += [sysquote("DESTDIR=" + relative_from($destdir, "../"+prefix))]
     end
-    if $static and ok and !$objs.empty? and !File.fnmatch?("-*", target)
+    if $static and ok and !$objs.empty? and !noinstall
       args += ["static"] unless $clean
       $extlist.push [$static, target, $target, $preload]
     end
@@ -271,6 +275,7 @@ def extmake(target)
       $extpath |= $LIBPATH
     end
   ensure
+    Logging::log_close
     unless $ignore
       RbConfig.module_eval {
 	remove_const(:CONFIG)
@@ -286,6 +291,7 @@ def extmake(target)
     $top_srcdir = top_srcdir
     $topdir = topdir
     $hdrdir = hdrdir
+    $static = static
     Dir.chdir dir
   end
   begin
@@ -718,6 +724,7 @@ elsif !$configure_only
   $mflags.concat(rubies)
   system($make, *sysquote($mflags)) or exit($?.exitstatus)
 end
+# :startdoc:
 
 #Local variables:
 # mode: ruby

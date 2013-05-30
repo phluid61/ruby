@@ -223,7 +223,7 @@ r_value(VALUE value)
   do { \
       if ((event) == RUBY_EVENT_LINE && iseq->coverage && \
 	  (line) != iseq->compile_data->last_coverable_line) { \
-	  RARRAY_PTR(iseq->coverage)[(line) - 1] = INT2FIX(0); \
+	  RARRAY_ASET(iseq->coverage, (line) - 1, INT2FIX(0)); \
 	  iseq->compile_data->last_coverable_line = (line); \
 	  ADD_INSN1((seq), (line), trace, INT2FIX(RUBY_EVENT_COVERAGE)); \
       } \
@@ -299,7 +299,7 @@ r_value(VALUE value)
 #define INIT_ANCHOR(name) \
   (name##_body__.last = &name##_body__.anchor, name = &name##_body__)
 
-#define hide_obj(obj) do {OBJ_FREEZE(obj); RBASIC(obj)->klass = 0;} while (0)
+#define hide_obj(obj) do {OBJ_FREEZE(obj); RBASIC_CLEAR_CLASS(obj);} while (0)
 
 #include "optinsn.inc"
 #if OPT_INSTRUCTIONS_UNIFICATION
@@ -416,7 +416,7 @@ static int
 iseq_add_mark_object(rb_iseq_t *iseq, VALUE v)
 {
     if (!SPECIAL_CONST_P(v)) {
-	rb_ary_push(iseq->mark_ary, v);
+	rb_iseq_add_mark_object(iseq, v);
     }
     return COMPILE_OK;
 }
@@ -1209,7 +1209,7 @@ iseq_set_arguments(rb_iseq_t *iseq, LINK_ANCHOR *optargs, NODE *node_args)
 		keywords = required;
 	    }
 	    for (j = 0; j < i; j++) {
-		iseq->arg_keyword_table[j] = FIX2INT(RARRAY_PTR(keywords)[j]);
+		iseq->arg_keyword_table[j] = FIX2INT(RARRAY_AREF(keywords, j));
 	    }
 	    ADD_INSN(optargs, nd_line(args->kw_args), pop);
 	}
@@ -3244,7 +3244,7 @@ iseq_compile_each(rb_iseq_t *iseq, LINK_ANCHOR *ret, NODE * node, int poped)
 	INIT_ANCHOR(body_seq);
 	INIT_ANCHOR(cond_seq);
 
-	RHASH_TBL(literals)->type = &cdhash_type;
+	rb_hash_tbl_raw(literals)->type = &cdhash_type;
 
 	if (node->nd_head == 0) {
 	    COMPILE_(ret, "when", node->nd_body, poped);
@@ -3429,7 +3429,7 @@ iseq_compile_each(rb_iseq_t *iseq, LINK_ANCHOR *ret, NODE * node, int poped)
 				     redo_label, end_label);
 	}
 	else if (type == NODE_UNTIL) {
-	    /* untile */
+	    /* until */
 	    compile_branch_condition(iseq, ret, node->nd_cond,
 				     end_label, redo_label);
 	}
@@ -4473,7 +4473,7 @@ iseq_compile_each(rb_iseq_t *iseq, LINK_ANCHOR *ret, NODE * node, int poped)
 			}
 			ADD_INSN1(args, line, newarray, INT2FIX(j));
 			ADD_INSN (args, line, concatarray);
-			/* argc is setteled at above */
+			/* argc is settled at above */
 		    }
 		    else {
 			int j;
@@ -4485,7 +4485,7 @@ iseq_compile_each(rb_iseq_t *iseq, LINK_ANCHOR *ret, NODE * node, int poped)
 		    }
 		}
 
-		if (liseq->arg_keyword > 0) {
+		if (liseq->arg_keyword >= 0) {
 		    int local_size = liseq->local_size;
 		    int idx = local_size - liseq->arg_keyword;
 		    argc++;
@@ -4499,6 +4499,11 @@ iseq_compile_each(rb_iseq_t *iseq, LINK_ANCHOR *ret, NODE * node, int poped)
 			ADD_INSN2(args, line, getlocal, INT2FIX(idx), INT2FIX(lvar_level));
 		    }
 		    ADD_SEND(args, line, ID2SYM(id_core_hash_merge_ptr), INT2FIX(i * 2 + 1));
+		    if (liseq->arg_rest != -1) {
+			ADD_INSN1(args, line, newarray, INT2FIX(1));
+			ADD_INSN (args, line, concatarray);
+			--argc;
+		    }
 		}
 	    }
 	}
@@ -5175,7 +5180,12 @@ iseq_compile_each(rb_iseq_t *iseq, LINK_ANCHOR *ret, NODE * node, int poped)
 	break;
       }
       case NODE_DEFINED:{
-	if (!poped) {
+	if (poped) break;
+	if (!node->nd_head) {
+	    VALUE str = rb_iseq_defined_string(DEFINED_NIL);
+	    ADD_INSN1(ret, nd_line(node), putobject, str);
+	}
+	else {
 	    LABEL *lfinish[2];
 	    lfinish[0] = NEW_LABEL(line);
 	    lfinish[1] = 0;
@@ -5561,7 +5571,7 @@ iseq_build_from_ary_exception(rb_iseq_t *iseq, struct st_table *labels_table,
 	LABEL *lstart, *lend, *lcont;
 	int sp;
 
-	RB_GC_GUARD(v) = rb_convert_type(RARRAY_PTR(exception)[i], T_ARRAY,
+	RB_GC_GUARD(v) = rb_convert_type(RARRAY_AREF(exception, i), T_ARRAY,
 					 "Array", "to_ary");
 	if (RARRAY_LEN(v) != 6) {
 	    rb_raise(rb_eSyntaxError, "wrong exception entry");
@@ -5653,7 +5663,7 @@ iseq_build_from_ary_body(rb_iseq_t *iseq, LINK_ANCHOR *anchor,
 	    st_data_t insn_id;
 	    VALUE insn;
 
-	    insn = (argc < 0) ? Qnil : RARRAY_PTR(obj)[0];
+	    insn = (argc < 0) ? Qnil : RARRAY_AREF(obj, 0);
 	    if (st_lookup(insn_table, (st_data_t)insn, &insn_id) == 0) {
 		/* TODO: exception */
 		RB_GC_GUARD(insn) = rb_inspect(insn);
@@ -5784,7 +5794,7 @@ rb_iseq_build_from_ary(rb_iseq_t *iseq, VALUE locals, VALUE args,
     iseq->local_size = iseq->local_table_size + 1;
 
     for (i=0; i<RARRAY_LEN(locals); i++) {
-	VALUE lv = RARRAY_PTR(locals)[i];
+	VALUE lv = RARRAY_AREF(locals, i);
 	tbl[i] = FIXNUM_P(lv) ? (ID)FIX2LONG(lv) : SYM2ID(CHECK_SYMBOL(lv));
     }
 

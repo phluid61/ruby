@@ -2652,6 +2652,8 @@ str_transcode_enc_args(VALUE str, volatile VALUE *arg1, volatile VALUE *arg2,
     return dencidx;
 }
 
+VALUE rb_str_scrub(int argc, VALUE *argv, VALUE str);
+
 static int
 str_transcode0(int argc, VALUE *argv, VALUE *self, int ecflags, VALUE ecopts)
 {
@@ -2686,6 +2688,17 @@ str_transcode0(int argc, VALUE *argv, VALUE *self, int ecflags, VALUE ecopts)
                     ECONV_XML_ATTR_CONTENT_DECORATOR|
                     ECONV_XML_ATTR_QUOTE_DECORATOR)) == 0) {
         if (senc && senc == denc) {
+	    if (ecflags & ECONV_INVALID_MASK) {
+		if (!NIL_P(ecopts)) {
+		    VALUE rep = rb_hash_aref(ecopts, sym_replace);
+		    dest = rb_str_scrub(1, &rep, str);
+		}
+		else {
+		    dest = rb_str_scrub(0, NULL, str);
+		}
+		*self = dest;
+		return dencidx;
+	    }
             return NIL_P(arg2) ? -1 : dencidx;
         }
         if (senc && denc && rb_enc_asciicompat(senc) && rb_enc_asciicompat(denc)) {
@@ -2815,10 +2828,6 @@ static VALUE encoded_dup(VALUE newstr, VALUE str, int encidx);
  *  in the source encoding. The last form by default does not raise
  *  exceptions but uses replacement strings.
  *
- *  Please note that conversion from an encoding +enc+ to the
- *  same encoding +enc+ is a no-op, i.e. the receiver is returned without
- *  any changes, and no exceptions are raised, even if there are invalid bytes.
- *
  *  The +options+ Hash gives details for conversion and can have the following
  *  keys:
  *
@@ -2883,7 +2892,7 @@ encoded_dup(VALUE newstr, VALUE str, int encidx)
 	return newstr;
     }
     else {
-	RBASIC(newstr)->klass = rb_obj_class(str);
+	RBASIC_SET_CLASS(newstr, rb_obj_class(str));
     }
     return str_encode_associate(newstr, encidx);
 }
@@ -3048,10 +3057,10 @@ decorate_convpath(VALUE convpath, int ecflags)
 
     len = n = RARRAY_LENINT(convpath);
     if (n != 0) {
-        VALUE pair = RARRAY_PTR(convpath)[n-1];
+        VALUE pair = RARRAY_AREF(convpath, n-1);
 	if (RB_TYPE_P(pair, T_ARRAY)) {
-	    const char *sname = rb_enc_name(rb_to_encoding(RARRAY_PTR(pair)[0]));
-	    const char *dname = rb_enc_name(rb_to_encoding(RARRAY_PTR(pair)[1]));
+	    const char *sname = rb_enc_name(rb_to_encoding(RARRAY_AREF(pair, 0)));
+	    const char *dname = rb_enc_name(rb_to_encoding(RARRAY_AREF(pair, 1)));
 	    transcoder_entry_t *entry = get_transcoder_entry(sname, dname);
 	    const rb_transcoder *tr = load_transcoder_entry(entry);
 	    if (!tr)

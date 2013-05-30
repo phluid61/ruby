@@ -1,5 +1,6 @@
 #include "ruby/ruby.h"
 #include "ruby/encoding.h"
+#include "internal.h"
 #include <winbase.h>
 #include <wchar.h>
 #include <shlwapi.h>
@@ -193,7 +194,7 @@ code_page(rb_encoding *enc)
     enc_name = (char *)rb_enc_name(enc);
 
     fake_str.basic.flags = T_STRING|RSTRING_NOEMBED;
-    fake_str.basic.klass = rb_cString;
+    RBASIC_SET_CLASS_RAW((VALUE)&fake_str, rb_cString);
     fake_str.as.heap.len = strlen(enc_name);
     fake_str.as.heap.ptr = enc_name;
     fake_str.as.heap.aux.capa = fake_str.as.heap.len;
@@ -212,9 +213,9 @@ code_page(rb_encoding *enc)
 	names_ary = rb_funcall(encoding, names, 0);
     }
 
-    /* map US-ASCII and ASCII-8bit as code page 20127 (us-ascii) */
+    /* map US-ASCII and ASCII-8bit as code page 1252 (us-ascii) */
     if (enc == rb_usascii_encoding() || enc == rb_ascii8bit_encoding()) {
-	UINT code_page = 20127;
+	UINT code_page = 1252;
 	rb_hash_aset(rb_code_page, name_key, INT2FIX(code_page));
 	return code_page;
     }
@@ -412,7 +413,7 @@ rb_file_expand_path_internal(VALUE fname, VALUE dname, int abs_mode, int long_na
 	path_encoding = rb_filesystem_encoding();
 	cp = path_cp = system_code_page();
 
-	/* ignores dir since we are expading home */
+	/* ignores dir since we are expanding home */
 	ignore_dir = 1;
 
 	/* exclude ~ from the result */

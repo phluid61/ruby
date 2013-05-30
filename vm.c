@@ -24,12 +24,10 @@
 static inline VALUE *
 VM_EP_LEP(VALUE *ep)
 {
-    while (1) {
-	if (VM_EP_LEP_P(ep)) {
-	    return ep;
-	}
+    while (!VM_EP_LEP_P(ep)) {
 	ep = VM_EP_PREV_EP(ep);
     }
+    return ep;
 }
 
 VALUE *
@@ -1192,7 +1190,6 @@ vm_exec(rb_thread_t *th)
     int state;
     VALUE result, err;
     VALUE initial = 0;
-    VALUE *escape_ep = NULL;
 
     TH_PUSH_TAG(th);
     _tag.retval = Qnil;
@@ -1212,6 +1209,7 @@ vm_exec(rb_thread_t *th)
 	VALUE catch_iseqval;
 	rb_control_frame_t *cfp;
 	VALUE type;
+	VALUE *escape_ep;
 
 	err = th->errinfo;
 
@@ -1230,6 +1228,7 @@ vm_exec(rb_thread_t *th)
 	cfp = th->cfp;
 	epc = cfp->pc - cfp->iseq->iseq_encoded;
 
+	escape_ep = NULL;
 	if (state == TAG_BREAK || state == TAG_RETURN) {
 	    escape_ep = GET_THROWOBJ_CATCH_POINT(err);
 
@@ -1462,7 +1461,7 @@ rb_vm_control_frame_id_and_class(const rb_control_frame_t *cfp, ID *idp, VALUE *
     }
     while (iseq) {
 	if (RUBY_VM_IFUNC_P(iseq)) {
-	    if (idp) CONST_ID(*idp, "<ifunc>");
+	    if (idp) *idp = idIFUNC;
 	    if (klassp) *klassp = 0;
 	    return 1;
 	}
@@ -1732,7 +1731,7 @@ vm_init2(rb_vm_t *vm)
     MEMZERO(vm, rb_vm_t, 1);
     vm->src_encoding_index = -1;
     vm->at_exit.basic.flags = (T_ARRAY | RARRAY_EMBED_FLAG) & ~RARRAY_EMBED_LEN_MASK; /* len set 0 */
-    vm->at_exit.basic.klass = 0;
+    rb_obj_hide((VALUE)&vm->at_exit);
 
     vm_default_params_setup(vm);
 }
@@ -1990,7 +1989,7 @@ ruby_thread_init(VALUE self)
 
     th->vm = vm;
     th_init(th, self);
-    rb_iv_set(self, "locals", rb_hash_new());
+    rb_ivar_set(self, rb_intern("locals"), rb_hash_new());
 
     th->top_wrapper = 0;
     th->top_self = rb_vm_top_self();
@@ -2131,7 +2130,7 @@ m_core_hash_from_ary(VALUE self, VALUE ary)
 
     assert(RARRAY_LEN(ary) % 2 == 0);
     for (i=0; i<RARRAY_LEN(ary); i+=2) {
-	rb_hash_aset(hash, RARRAY_PTR(ary)[i], RARRAY_PTR(ary)[i+1]);
+	rb_hash_aset(hash, RARRAY_AREF(ary, i), RARRAY_AREF(ary, i+1));
     }
 
     return hash;
@@ -2144,7 +2143,7 @@ m_core_hash_merge_ary(VALUE self, VALUE hash, VALUE ary)
 
     assert(RARRAY_LEN(ary) % 2 == 0);
     for (i=0; i<RARRAY_LEN(ary); i+=2) {
-	rb_hash_aset(hash, RARRAY_PTR(ary)[i], RARRAY_PTR(ary)[i+1]);
+	rb_hash_aset(hash, RARRAY_AREF(ary, i), RARRAY_AREF(ary, i+1));
     }
 
     return hash;
@@ -2260,6 +2259,8 @@ Init_VM(void)
     rb_define_method_id(klass, id_core_hash_merge_ary, m_core_hash_merge_ary, 2);
     rb_define_method_id(klass, id_core_hash_merge_ptr, m_core_hash_merge_ptr, -1);
     rb_define_method_id(klass, id_core_hash_merge_kwd, m_core_hash_merge_kwd, 2);
+    rb_define_method_id(klass, idProc, rb_block_proc, 0);
+    rb_define_method_id(klass, idLambda, rb_block_lambda, 0);
     rb_obj_freeze(fcore);
     rb_gc_register_mark_object(fcore);
     rb_mRubyVMFrozenCore = fcore;
@@ -2462,7 +2463,7 @@ Init_VM(void)
 
     /* ::RubyVM::DEFAULT_PARAMS
      * This constant variable shows VM's default parameters.
-     * Note that changing these values does not affect VM exection.
+     * Note that changing these values does not affect VM execution.
      * Specification is not stable and you should not depend on this value.
      * Of course, this constant is MRI specific.
      */

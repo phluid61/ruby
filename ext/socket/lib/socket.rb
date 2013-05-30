@@ -288,11 +288,6 @@ class Socket < BasicSocket
   # The value of the block is returned.
   # The socket is closed when this method returns.
   #
-  # The optional last argument _opts_ is options represented by a hash.
-  # _opts_ may have following options:
-  #
-  # [:timeout] specify the timeout in seconds.
-  #
   # If no block is given, the socket is returned.
   #
   #   Socket.tcp("www.ruby-lang.org", 80) {|sock|
@@ -413,7 +408,7 @@ class Socket < BasicSocket
   # The value of the block is returned.
   # The socket is closed when this method returns.
   #
-  # If _port_ is 0, actual port number is choosen dynamically.
+  # If _port_ is 0, actual port number is chosen dynamically.
   # However all sockets in the result has same port number.
   #
   #   # tcp_server_sockets returns two sockets.
@@ -425,7 +420,7 @@ class Socket < BasicSocket
   #   #=> #<Addrinfo: [::]:1296 TCP>
   #   #   #<Addrinfo: 0.0.0.0:1296 TCP>
   #
-  #   # IPv6 and IPv4 socket has same port number, 53114, even if it is choosen dynamically.
+  #   # IPv6 and IPv4 socket has same port number, 53114, even if it is chosen dynamically.
   #   sockets = Socket.tcp_server_sockets(0)
   #   sockets.each {|s| p s.local_address }
   #   #=> #<Addrinfo: [::]:53114 TCP>
@@ -555,8 +550,8 @@ class Socket < BasicSocket
   # The value of the block is returned.
   # The sockets are closed when this method returns.
   #
-  # If _port_ is zero, some port is choosen.
-  # But the choosen port is used for the all sockets.
+  # If _port_ is zero, some port is chosen.
+  # But the chosen port is used for the all sockets.
   #
   #   # UDP/IP echo server
   #   Socket.udp_server_sockets(0) {|sockets|
@@ -718,9 +713,9 @@ class Socket < BasicSocket
 
   # UDP/IP address information used by Socket.udp_server_loop.
   class UDPSource
-    # +remote_adress+ is an Addrinfo object.
+    # +remote_address+ is an Addrinfo object.
     #
-    # +local_adress+ is an Addrinfo object.
+    # +local_address+ is an Addrinfo object.
     #
     # +reply_proc+ is a Proc used to send reply back to the source.
     def initialize(remote_address, local_address, &reply_proc)

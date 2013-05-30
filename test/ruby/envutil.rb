@@ -1,6 +1,7 @@
 # -*- coding: us-ascii -*-
 require "open3"
 require "timeout"
+require "test/unit"
 
 module EnvUtil
   def rubybin
@@ -162,7 +163,7 @@ module Test
         code.sub!(/\A(?:\xef\xbb\xbf)?(\s*\#.*$)*(\n)?/n) {
           "#$&#{"\n" if $1 && !$2}BEGIN{throw tag, :ok}\n"
         }
-        code.force_encoding("us-ascii")
+        code.force_encoding(Encoding::UTF_8)
         verbose, $VERBOSE = $VERBOSE, nil
         yield if defined?(yield)
         case
@@ -269,8 +270,9 @@ module Test
 
       def assert_ruby_status(args, test_stdin="", message=nil, opt={})
         out, _, status = EnvUtil.invoke_ruby(args, test_stdin, true, :merge_to_stdout, opt)
+        assert(!status.signaled?, FailDesc[status, message, out])
         message ||= "ruby exit status is not success:"
-        assert(status.success?, FailDesc[status, "#{message} (#{status.inspect})", out])
+        assert(status.success?, "#{message} (#{status.inspect})")
       end
 
       ABORT_SIGNALS = Signal.list.values_at(*%w"ILL ABRT BUS SEGV")
@@ -282,21 +284,40 @@ module Test
           line ||= loc.lineno
         end
         src = <<eom
-  require 'test/unit';include Test::Unit::Assertions;begin;#{src}
+  require #{__dir__.dump}'/envutil';include Test::Unit::Assertions;begin;#{src}
   ensure
     puts [Marshal.dump($!)].pack('m'), "assertions=\#{self._assertions}"
   end
+  class Test::Unit::Runner
+    @@stop_auto_run = true
+  end
 eom
+        args = args.dup
+        args.insert((Hash === args.first ? 1 : 0), *$:.map {|l| "-I#{l}"})
+        ignore_stderr = opt.delete(:ignore_stderr)
         stdout, stderr, status = EnvUtil.invoke_ruby(args, src, true, true, opt)
         abort = status.coredump? || (status.signaled? && ABORT_SIGNALS.include?(status.termsig))
         assert(!abort, FailDesc[status, stderr])
         self._assertions += stdout[/^assertions=(\d+)/, 1].to_i
-        res = Marshal.load(stdout.unpack("m")[0])
-        return unless res
-        res.backtrace.each do |l|
-          l.sub!(/\A-:(\d+)/){"#{file}:#{line + $1.to_i}"}
+        begin
+          res = Marshal.load(stdout.unpack("m")[0])
+        rescue => marshal_error
+          ignore_stderr = nil
         end
-        raise res
+        if res
+          res.backtrace.each do |l|
+            l.sub!(/\A-:(\d+)/){"#{file}:#{line + $1.to_i}"}
+          end
+          raise res
+        end
+
+        # really is it succeed?
+        unless ignore_stderr
+          # the body of assert_separately must not output anything to detect errror
+          assert_equal("", stderr, "assert_separately failed with error message")
+        end
+        assert_equal(0, status, "assert_separately failed: '#{stderr}'")
+        raise marshal_error if marshal_error
       end
 
       def assert_warning(pat, msg = nil)

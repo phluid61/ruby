@@ -542,10 +542,10 @@ add_modules(VALUE *req_list, const char *mod)
 
     if (!list) {
 	*req_list = list = rb_ary_new();
-	RBASIC(list)->klass = 0;
+	RBASIC_CLEAR_CLASS(list);
     }
     feature = rb_str_new2(mod);
-    RBASIC(feature)->klass = 0;
+    RBASIC_CLEAR_CLASS(feature);
     rb_ary_push(list, feature);
 }
 
@@ -565,7 +565,7 @@ require_libraries(VALUE *req_list)
     while (list && RARRAY_LEN(list) > 0) {
 	VALUE feature = rb_ary_shift(list);
 	rb_enc_associate(feature, extenc);
-	RBASIC(feature)->klass = rb_cString;
+	RBASIC_SET_CLASS_RAW(feature, rb_cString);
 	OBJ_FREEZE(feature);
 	rb_funcall2(self, require, 1, &feature);
     }
@@ -1241,7 +1241,7 @@ uscore_get(void)
 /*
  *  call-seq:
  *     sub(pattern, replacement)   -> $_
- *     sub(pattern) { block }      -> $_
+ *     sub(pattern) {|...| block } -> $_
  *
  *  Equivalent to <code>$_.sub(<i>args</i>)</code>, except that
  *  <code>$_</code> will be updated if substitution occurs.
@@ -1258,11 +1258,11 @@ rb_f_sub(int argc, VALUE *argv)
 
 /*
  *  call-seq:
- *     gsub(pattern, replacement)    -> string
- *     gsub(pattern) {|...| block }  -> string
+ *     gsub(pattern, replacement)    -> $_
+ *     gsub(pattern) {|...| block }  -> $_
  *
  *  Equivalent to <code>$_.gsub...</code>, except that <code>$_</code>
- *  receives the modified result.
+ *  will be updated if substitution occurs.
  *  Available only when -p/-n command line option specified.
  *
  */
@@ -1277,7 +1277,7 @@ rb_f_gsub(int argc, VALUE *argv)
 
 /*
  *  call-seq:
- *     chop   -> string
+ *     chop   -> $_
  *
  *  Equivalent to <code>($_.dup).chop!</code>, except <code>nil</code>
  *  is never returned. See <code>String#chop!</code>.
@@ -1442,8 +1442,8 @@ process_options(int argc, char **argv, struct cmdline_options *opt)
 	long i;
 	VALUE load_path = GET_VM()->load_path;
 	for (i = 0; i < RARRAY_LEN(load_path); ++i) {
-	    RARRAY_PTR(load_path)[i] =
-		rb_enc_associate(rb_str_dup(RARRAY_PTR(load_path)[i]), lenc);
+	    RARRAY_ASET(load_path, i,
+			rb_enc_associate(rb_str_dup(RARRAY_AREF(load_path, i)), lenc));
 	}
     }
     if (!(opt->disable & DISABLE_BIT(gems))) {
@@ -1795,7 +1795,7 @@ set_arg0(VALUE val, ID id)
 
 /*! Sets the current script name to this value.
  *
- * This is similiar to <code>$0 = name</code> in Ruby level but also affects
+ * This is similar to <code>$0 = name</code> in Ruby level but also affects
  * <code>Method#location</code> and others.
  */
 void

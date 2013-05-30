@@ -19,6 +19,9 @@
 #include "ruby_atomic.h"
 #include "eval_intern.h"
 #include "internal.h"
+#ifdef HAVE_UNISTD_H
+# include <unistd.h>
+#endif
 
 #if defined(__native_client__) && defined(NACL_NEWLIB)
 # include "nacl/signal.h"
@@ -364,7 +367,7 @@ ruby_default_signal(int sig)
 VALUE
 rb_f_kill(int argc, VALUE *argv)
 {
-#ifndef HAS_KILLPG
+#ifndef HAVE_KILLPG
 #define killpg(pg, sig) kill(-(pg), (sig))
 #endif
     int negative = 0;
@@ -629,7 +632,7 @@ sigbus(int sig SIGINFO_ARG)
 {
 /*
  * Mac OS X makes KERN_PROTECTION_FAILURE when thread touch guard page.
- * and it's delivered as SIGBUS instaed of SIGSEGV to userland. It's crazy
+ * and it's delivered as SIGBUS instead of SIGSEGV to userland. It's crazy
  * wrong IMHO. but anyway we have to care it. Sigh.
  */
 #if defined __APPLE__

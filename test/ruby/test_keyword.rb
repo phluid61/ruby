@@ -23,6 +23,7 @@ class TestKeywordArguments < Test::Unit::TestCase
   def test_f2
     assert_equal([:xyz, "foo", 424242], f2(:xyz))
     assert_raise(ArgumentError) { f2({}) } # [ruby-dev:46712] [Bug #7529]
+    assert_equal([{"bar"=>42}, "foo", 424242], f2("bar"=>42))
   end
 
 
@@ -326,5 +327,56 @@ class TestKeywordArguments < Test::Unit::TestCase
     assert_equal([[:keyreq, :a], [:keyrest, :b]], b.parameters, feature7701)
     assert_raise(ArgumentError, bug8139) {b.call(c: bug8139)}
     assert_raise(ArgumentError, bug8139) {b.call}
+  end
+
+  def test_super_with_keyword
+    bug8236 = '[ruby-core:54094] [Bug #8236]'
+    base = Class.new do
+      def foo(*args)
+        args
+      end
+    end
+    a = Class.new(base) do
+      def foo(arg, bar: 'x')
+        super
+      end
+    end
+    b = Class.new(base) do
+      def foo(*args, bar: 'x')
+        super
+      end
+    end
+    assert_equal([42, {:bar=>"x"}], a.new.foo(42), bug8236)
+    assert_equal([42, {:bar=>"x"}], b.new.foo(42), bug8236)
+  end
+
+  def test_zsuper_only_named_kwrest
+    bug8416 = '[ruby-core:55033] [Bug #8416]'
+    base = Class.new do
+      def foo(**h)
+        h
+      end
+    end
+    a = Class.new(base) do
+      def foo(**h)
+        super
+      end
+    end
+    assert_equal({:bar=>"x"}, a.new.foo(bar: "x"), bug8416)
+  end
+
+  def test_zsuper_only_anonymous_kwrest
+    bug8416 = '[ruby-core:55033] [Bug #8416]'
+    base = Class.new do
+      def foo(**h)
+        h
+      end
+    end
+    a = Class.new(base) do
+      def foo(**)
+        super
+      end
+    end
+    assert_equal({:bar=>"x"}, a.new.foo(bar: "x"), bug8416)
   end
 end

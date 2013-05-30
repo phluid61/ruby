@@ -38,6 +38,16 @@
 
 /* #define ENABLE_NUMERIC_STRING */
 
+#define MUL_OVERFLOW_SIGNED_INTEGER_P(a, b, min, max) ( \
+    (a) == 0 ? 0 : \
+    (a) == -1 ? (b) < -(max) : \
+    (a) > 0 ? \
+      ((b) > 0 ? (max) / (a) < (b) : (min) / (a) > (b)) : \
+      ((b) > 0 ? (min) / (a) < (b) : (max) / (a) > (b)))
+#define SIGNED_VALUE_MAX INTPTR_MAX
+#define SIGNED_VALUE_MIN INTPTR_MIN
+#define MUL_OVERFLOW_SIGNED_VALUE_P(a, b) MUL_OVERFLOW_SIGNED_INTEGER_P(a, b, SIGNED_VALUE_MIN, SIGNED_VALUE_MAX)
+
 VALUE rb_cBigDecimal;
 VALUE rb_mBigMath;
 
@@ -2543,7 +2553,7 @@ BigDecimal_sign(VALUE self)
 /*
  * call-seq: BigDecimal.save_exception_mode { ... }
  *
- * Excecute the provided block, but preserve the exception mode
+ * Execute the provided block, but preserve the exception mode
  *
  *     BigDecimal.save_exception_mode do
  *       BigDecimal.mode(BigDecimal::EXCEPTION_OVERFLOW, false)
@@ -2572,7 +2582,7 @@ BigDecimal_save_exception_mode(VALUE self)
 /*
  * call-seq: BigDecimal.save_rounding_mode { ... }
  *
- * Excecute the provided block, but preserve the rounding mode
+ * Execute the provided block, but preserve the rounding mode
  *
  *     BigDecimal.save_exception_mode do
  *       BigDecimal.mode(BigDecimal::ROUND_MODE, :up)
@@ -2597,7 +2607,7 @@ BigDecimal_save_rounding_mode(VALUE self)
 /*
  * call-seq: BigDecimal.save_limit { ... }
  *
- * Excecute the provided block, but preserve the precision limit
+ * Execute the provided block, but preserve the precision limit
  *
  *      BigDecimal.limit(100)
  *      puts BigDecimal.limit
@@ -2620,14 +2630,14 @@ BigDecimal_save_limit(VALUE self)
 }
 
 /* call-seq:
- * BigMath.exp(x, prec)
+ * BigMath.exp(decimal, numeric)    -> BigDecimal
  *
  * Computes the value of e (the base of natural logarithms) raised to the
- * power of x, to the specified number of digits of precision.
+ * power of +decimal+, to the specified number of digits of precision.
  *
- * If x is infinity, returns Infinity.
+ * If +decimal+ is infinity, returns Infinity.
  *
- * If x is NaN, returns NaN.
+ * If +decimal+ is NaN, returns NaN.
  */
 static VALUE
 BigMath_s_exp(VALUE klass, VALUE x, VALUE vprec)
@@ -2750,16 +2760,16 @@ BigMath_s_exp(VALUE klass, VALUE x, VALUE vprec)
 }
 
 /* call-seq:
- * BigMath.log(x, prec)
+ * BigMath.log(decimal, numeric)    -> BigDecimal
  *
- * Computes the natural logarithm of x to the specified number of digits of
- * precision.
+ * Computes the natural logarithm of +decimal+ to the specified number of
+ * digits of precision, +numeric+.
  *
- * If x is zero or negative, raises Math::DomainError.
+ * If +decimal+ is zero or negative, raises Math::DomainError.
  *
- * If x is positive infinity, returns Infinity.
+ * If +decimal+ is positive infinity, returns Infinity.
  *
- * If x is NaN, returns NaN.
+ * If +decimal+ is NaN, returns NaN.
  */
 static VALUE
 BigMath_s_log(VALUE klass, VALUE x, VALUE vprec)
@@ -3218,7 +3228,6 @@ Init_bigdecimal(void)
     rb_define_method(rb_cBigDecimal, "truncate",  BigDecimal_truncate, -1);
     rb_define_method(rb_cBigDecimal, "_dump", BigDecimal_dump, -1);
 
-    /* mathematical functions */
     rb_mBigMath = rb_define_module("BigMath");
     rb_define_singleton_method(rb_mBigMath, "exp", BigMath_s_exp, 2);
     rb_define_singleton_method(rb_mBigMath, "log", BigMath_s_log, 2);
@@ -3256,7 +3265,7 @@ static int gfCheckVal = 1;      /* Value checking flag in VpNmlz()  */
 
 static Real *VpConstOne;    /* constant 1.0 */
 static Real *VpPt5;        /* constant 0.5 */
-#define maxnr 100UL    /* Maximum iterations for calcurating sqrt. */
+#define maxnr 100UL    /* Maximum iterations for calculating sqrt. */
                 /* used in VpSqrt() */
 
 /* ETC */
@@ -3680,7 +3689,7 @@ VpNumOfChars(Real *vp,const char *pszFmt)
  * [Input]
  *   BaseVal: Base value(assigned to BASE) for Vp calculation.
  *   It must be the form BaseVal=10**n.(n=1,2,3,...)
- *   If Base <= 0L,then the BASE will be calcurated so
+ *   If Base <= 0L,then the BASE will be calculated so
  *   that BASE is as large as possible satisfying the
  *   relation MaxVal <= BASE*(BASE+1). Where the value
  *   MaxVal is the largest value which can be represented
@@ -3735,12 +3744,18 @@ AddExponent(Real *a, SIGNED_VALUE n)
     SIGNED_VALUE eb, mb;
     if (e > 0) {
 	if (n > 0) {
+            if (MUL_OVERFLOW_SIGNED_VALUE_P(m, (SIGNED_VALUE)BASE_FIG) ||
+                MUL_OVERFLOW_SIGNED_VALUE_P(e, (SIGNED_VALUE)BASE_FIG))
+                goto overflow;
 	    mb = m*(SIGNED_VALUE)BASE_FIG;
 	    eb = e*(SIGNED_VALUE)BASE_FIG;
 	    if (mb < eb) goto overflow;
 	}
     }
     else if (n < 0) {
+        if (MUL_OVERFLOW_SIGNED_VALUE_P(m, (SIGNED_VALUE)BASE_FIG) ||
+            MUL_OVERFLOW_SIGNED_VALUE_P(e, (SIGNED_VALUE)BASE_FIG))
+            goto underflow;
 	mb = m*(SIGNED_VALUE)BASE_FIG;
 	eb = e*(SIGNED_VALUE)BASE_FIG;
 	if (mb > eb) goto underflow;
@@ -4399,7 +4414,7 @@ VpSetPTR(Real *a, Real *b, Real *c, size_t *a_pos, size_t *b_pos, size_t *c_pos,
 }
 
 /*
- * Return number og significant digits
+ * Return number of significant digits
  *       c = a * b , Where a = a0a1a2 ... an
  *             b = b0b1b2 ... bm
  *             c = c0c1c2 ... cl
@@ -4635,7 +4650,7 @@ VpDivd(Real *c, Real *r, Real *a, Real *b)
 	    }
 	    /* The first few word digits of r and b is the same and */
 	    /* the first different word digit of w is greater than that */
-	    /* of b, so quotinet is 1 and just subtract b from r. */
+	    /* of b, so quotient is 1 and just subtract b from r. */
 	    borrow = 0;        /* quotient=1, then just r-b */
 	    ind_b = b->Prec - 1;
 	    ind_r = ind_c + ind_b;
@@ -4837,7 +4852,7 @@ VpComp(Real *a, Real *b)
 	goto Exit;
     }
 
-    /* a and b have same sign, && signe!=0,then compare exponent */
+    /* a and b have same sign, && sign!=0,then compare exponent */
     if (a->exponent > b->exponent) {
 	val = VpGetSign(a);
 	goto Exit;
@@ -4920,7 +4935,7 @@ VPrint(FILE *fp, const char *cntl_chr, Real *a)
     j = 0;
     nd = nc = 0;        /*  nd : number of digits in fraction part(every 10 digits, */
     /*    nd<=10). */
-    /*  nc : number of caracters printed  */
+    /*  nc : number of characters printed  */
     ZeroSup = 1;        /* Flag not to print the leading zeros as 0.00xxxxEnn */
     while (*(cntl_chr + j)) {
 	if (*(cntl_chr + j) == '%' && *(cntl_chr + j + 1) != '%') {
@@ -5254,9 +5269,19 @@ VpCtoV(Real *a, const char *int_chr, size_t ni, const char *frac, size_t nf, con
 	    ++me;
 	}
 	while (i < me) {
+            if (MUL_OVERFLOW_SIGNED_VALUE_P(e, (SIGNED_VALUE)BASE_FIG)) {
+                es = e;
+                goto exp_overflow;
+            }
 	    es = e * (SIGNED_VALUE)BASE_FIG;
+            if (MUL_OVERFLOW_SIGNED_VALUE_P(e, 10) ||
+                SIGNED_VALUE_MAX - (exp_chr[i] - '0') < e * 10)
+                goto exp_overflow;
 	    e = e * 10 + exp_chr[i] - '0';
+            if (MUL_OVERFLOW_SIGNED_VALUE_P(e, (SIGNED_VALUE)BASE_FIG))
+                goto exp_overflow;
 	    if (es > (SIGNED_VALUE)(e * BASE_FIG)) {
+              exp_overflow:
 		exponent_overflow = 1;
 		e = es; /* keep sign */
 		break;
@@ -5684,9 +5709,9 @@ Exit:
 VP_EXPORT int
 VpMidRound(Real *y, unsigned short f, ssize_t nf)
 /*
- * Round reletively from the decimal point.
+ * Round relatively from the decimal point.
  *    f: rounding mode
- *   nf: digit location to round from the the decimal point.
+ *   nf: digit location to round from the decimal point.
  */
 {
     /* fracf: any positive digit under rounding position? */
@@ -5756,7 +5781,7 @@ VpMidRound(Real *y, unsigned short f, ssize_t nf)
        */
 
     /* now check all the remaining BDIGITS for zero-ness a whole BDIGIT at a time.
-       if we spot any non-zeroness, that means that we foudn a positive digit under
+       if we spot any non-zeroness, that means that we found a positive digit under
        rounding position, and we also found a positive digit under one further than
        the rounding position, so both searches (to see if any such non-zero digit exists)
        can stop */

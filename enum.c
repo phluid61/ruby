@@ -17,6 +17,10 @@
 
 #define STATIC_ASSERT(name, expr) typedef int static_assert_##name##_check[1 - 2*!(expr)]
 
+#define numberof(array) (int)(sizeof(array) / sizeof((array)[0]))
+
+VALUE rb_f_send(int argc, VALUE *argv, VALUE recv);
+
 VALUE rb_mEnumerable;
 
 static ID id_next;
@@ -570,6 +574,7 @@ static VALUE
 inject_op_i(VALUE i, VALUE p, int argc, VALUE *argv)
 {
     NODE *memo = RNODE(p);
+    VALUE name;
 
     ENUM_WANT_SVALUE();
 
@@ -577,8 +582,14 @@ inject_op_i(VALUE i, VALUE p, int argc, VALUE *argv)
 	memo->u2.argc = 1;
 	memo->u1.value = i;
     }
+    else if (SYMBOL_P(name = memo->u3.value)) {
+	memo->u1.value = rb_funcall(memo->u1.value, SYM2ID(name), 1, i);
+    }
     else {
-	memo->u1.value = rb_funcall(memo->u1.value, memo->u3.id, 1, i);
+	VALUE args[2];
+	args[0] = name;
+	args[1] = i;
+	memo->u1.value = rb_f_send(numberof(args), args, memo->u1.value);
     }
     return Qnil;
 }
@@ -632,6 +643,7 @@ enum_inject(int argc, VALUE *argv, VALUE obj)
     NODE *memo;
     VALUE init, op;
     VALUE (*iter)(VALUE, VALUE, int, VALUE*) = inject_i;
+    ID id;
 
     switch (rb_scan_args(argc, argv, "02", &init, &op)) {
       case 0:
@@ -640,7 +652,8 @@ enum_inject(int argc, VALUE *argv, VALUE obj)
 	if (rb_block_given_p()) {
 	    break;
 	}
-	op = (VALUE)rb_to_id(init);
+	id = rb_check_id(&init);
+	op = id ? ID2SYM(id) : init;
 	argc = 0;
 	init = Qnil;
 	iter = inject_op_i;
@@ -649,7 +662,8 @@ enum_inject(int argc, VALUE *argv, VALUE obj)
 	if (rb_block_given_p()) {
 	    rb_warning("given block not used");
 	}
-	op = (VALUE)rb_to_id(op);
+	id = rb_check_id(&op);
+	if (id) op = ID2SYM(id);
 	iter = inject_op_i;
 	break;
     }
@@ -846,8 +860,8 @@ sort_by_i(VALUE i, VALUE _data, int argc, VALUE *argv)
 	rb_raise(rb_eRuntimeError, "sort_by reentered");
     }
 
-    RARRAY_PTR(data->buf)[data->n*2] = v;
-    RARRAY_PTR(data->buf)[data->n*2+1] = i;
+    RARRAY_ASET(data->buf, data->n*2, v);
+    RARRAY_ASET(data->buf, data->n*2+1, i);
     data->n++;
     if (data->n == SORT_BY_BUFSIZE) {
 	rb_ary_concat(ary, data->buf);
@@ -960,7 +974,7 @@ enum_sort_by(VALUE obj)
     else {
 	ary = rb_ary_new();
     }
-    RBASIC(ary)->klass = 0;
+    RBASIC_CLEAR_CLASS(ary);
     buf = rb_ary_tmp_new(SORT_BY_BUFSIZE*2);
     rb_ary_store(buf, SORT_BY_BUFSIZE*2-1, Qnil);
     memo = NEW_MEMO(0, 0, 0);
@@ -984,10 +998,10 @@ enum_sort_by(VALUE obj)
 	rb_raise(rb_eRuntimeError, "sort_by reentered");
     }
     for (i=1; i<RARRAY_LEN(ary); i+=2) {
-	RARRAY_PTR(ary)[i/2] = RARRAY_PTR(ary)[i];
+	RARRAY_ASET(ary, i/2, RARRAY_AREF(ary, i));
     }
     rb_ary_resize(ary, RARRAY_LEN(ary)/2);
-    RBASIC(ary)->klass = rb_cArray;
+    RBASIC_SET_CLASS_RAW(ary, rb_cArray);
     OBJ_INFECT(ary, memo);
 
     return ary;
@@ -1754,7 +1768,7 @@ enum_reverse_each(int argc, VALUE *argv, VALUE obj)
     ary = enum_to_a(argc, argv, obj);
 
     for (i = RARRAY_LEN(ary); --i >= 0; ) {
-	rb_yield(RARRAY_PTR(ary)[i]);
+	rb_yield(RARRAY_AREF(ary, i));
     }
 
     return obj;
@@ -1829,7 +1843,7 @@ static VALUE
 enum_each_slice_size(VALUE obj, VALUE args)
 {
     VALUE n, size;
-    long slice_size = NUM2LONG(RARRAY_PTR(args)[0]);
+    long slice_size = NUM2LONG(RARRAY_AREF(args, 0));
     if (slice_size <= 0) rb_raise(rb_eArgError, "invalid slice size");
 
     size = enum_size(obj, 0);
@@ -1896,7 +1910,7 @@ static VALUE
 enum_each_cons_size(VALUE obj, VALUE args)
 {
     VALUE n, size;
-    long cons_size = NUM2LONG(RARRAY_PTR(args)[0]);
+    long cons_size = NUM2LONG(RARRAY_AREF(args, 0));
     if (cons_size <= 0) rb_raise(rb_eArgError, "invalid size");
 
     size = enum_size(obj, 0);
@@ -1984,13 +1998,13 @@ zip_ary(VALUE val, NODE *memo, int argc, VALUE *argv)
     tmp = rb_ary_new2(RARRAY_LEN(args) + 1);
     rb_ary_store(tmp, 0, rb_enum_values_pack(argc, argv));
     for (i=0; i<RARRAY_LEN(args); i++) {
-	VALUE e = RARRAY_PTR(args)[i];
+	VALUE e = RARRAY_AREF(args, i);
 
 	if (RARRAY_LEN(e) <= n) {
 	    rb_ary_push(tmp, Qnil);
 	}
 	else {
-	    rb_ary_push(tmp, RARRAY_PTR(e)[n]);
+	    rb_ary_push(tmp, RARRAY_AREF(e, n));
 	}
     }
     if (NIL_P(result)) {
@@ -2025,16 +2039,16 @@ zip_i(VALUE val, NODE *memo, int argc, VALUE *argv)
     tmp = rb_ary_new2(RARRAY_LEN(args) + 1);
     rb_ary_store(tmp, 0, rb_enum_values_pack(argc, argv));
     for (i=0; i<RARRAY_LEN(args); i++) {
-	if (NIL_P(RARRAY_PTR(args)[i])) {
+	if (NIL_P(RARRAY_AREF(args, i))) {
 	    rb_ary_push(tmp, Qnil);
 	}
 	else {
 	    VALUE v[2];
 
-	    v[1] = RARRAY_PTR(args)[i];
+	    v[1] = RARRAY_AREF(args, i);
 	    rb_rescue2(call_next, (VALUE)v, call_stop, (VALUE)v, rb_eStopIteration, (VALUE)0);
 	    if (v[0] == Qundef) {
-		RARRAY_PTR(args)[i] = Qnil;
+		RARRAY_ASET(args, i, Qnil);
 		v[0] = Qnil;
 	    }
 	    rb_ary_push(tmp, v[0]);
@@ -2291,7 +2305,7 @@ enum_cycle_size(VALUE self, VALUE args)
     if (size == Qnil) return Qnil;
 
     if (args && (RARRAY_LEN(args) > 0)) {
-	n = RARRAY_PTR(args)[0];
+	n = RARRAY_AREF(args, 0);
     }
     if (n == Qnil) return DBL2NUM(INFINITY);
     mul = NUM2LONG(n);
@@ -2338,13 +2352,13 @@ enum_cycle(int argc, VALUE *argv, VALUE obj)
         if (n <= 0) return Qnil;
     }
     ary = rb_ary_new();
-    RBASIC(ary)->klass = 0;
+    RBASIC_CLEAR_CLASS(ary);
     rb_block_call(obj, id_each, 0, 0, cycle_i, ary);
     len = RARRAY_LEN(ary);
     if (len == 0) return Qnil;
     while (n < 0 || 0 < --n) {
         for (i=0; i<len; i++) {
-            rb_yield(RARRAY_PTR(ary)[i]);
+            rb_yield(RARRAY_AREF(ary, i));
         }
     }
     return Qnil;
@@ -2387,7 +2401,7 @@ chunk_ii(VALUE i, VALUE _argp, int argc, VALUE *argv)
         }
     }
     else if (SYMBOL_P(v) && rb_id2name(SYM2ID(v))[0] == '_') {
-	rb_raise(rb_eRuntimeError, "symbol begins with an underscore is reserved");
+	rb_raise(rb_eRuntimeError, "symbols beginning with an underscore are reserved");
     }
     else {
         if (NIL_P(argp->prev_value)) {
@@ -2476,7 +2490,7 @@ chunk_i(VALUE yielder, VALUE enumerator, int argc, VALUE *argv)
  *  Any other symbols that begin with an underscore will raise an error:
  *
  *    items.chunk { |item| :_underscore }
- *    #=> RuntimeError: symbol begins with an underscore is reserved
+ *    #=> RuntimeError: symbols beginning with an underscore are reserved
  *
  *  +nil+ and +:_separator+ can be used to ignore some elements.
  *

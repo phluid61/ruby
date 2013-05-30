@@ -14,6 +14,7 @@
 #include "ruby/ruby.h"
 #include "ruby/re.h"
 #include "ruby/encoding.h"
+#include "internal.h"
 #include <math.h>
 #include <stdarg.h>
 
@@ -128,10 +129,13 @@ sign_bits(int base, const char *p)
 
 #define GETNUM(n, val) \
     for (; p < end && rb_enc_isdigit(*p, enc); p++) {	\
-	int next_n = 10 * (n) + (*p - '0'); \
-        if (next_n / 10 != (n)) {\
+	int next_n = (n); \
+        if (MUL_OVERFLOW_INT_P(10, next_n)) \
 	    rb_raise(rb_eArgError, #val " too big"); \
-	} \
+	next_n *= 10; \
+        if (INT_MAX - (*p - '0') < next_n) \
+	    rb_raise(rb_eArgError, #val " too big"); \
+	next_n += *p - '0'; \
 	(n) = next_n; \
     } \
     if (p >= end) { \
@@ -1235,12 +1239,12 @@ rb_enc_vsprintf(rb_encoding *enc, const char *fmt, va_list ap)
     }
     f._bf._base = (unsigned char *)result;
     f._p = (unsigned char *)RSTRING_PTR(result);
-    RBASIC(result)->klass = 0;
+    RBASIC_CLEAR_CLASS(result);
     f.vwrite = ruby__sfvwrite;
     f.vextra = ruby__sfvextra;
     buffer.value = 0;
     BSD_vfprintf(&f, fmt, ap);
-    RBASIC(result)->klass = rb_cString;
+    RBASIC_SET_CLASS_RAW(result, rb_cString);
     rb_str_resize(result, (char *)f._p - RSTRING_PTR(result));
 #undef f
 
@@ -1294,12 +1298,12 @@ rb_str_vcatf(VALUE str, const char *fmt, va_list ap)
     f._bf._base = (unsigned char *)str;
     f._p = (unsigned char *)RSTRING_END(str);
     klass = RBASIC(str)->klass;
-    RBASIC(str)->klass = 0;
+    RBASIC_CLEAR_CLASS(str);
     f.vwrite = ruby__sfvwrite;
     f.vextra = ruby__sfvextra;
     buffer.value = 0;
     BSD_vfprintf(&f, fmt, ap);
-    RBASIC(str)->klass = klass;
+    RBASIC_SET_CLASS_RAW(str, klass);
     rb_str_resize(str, (char *)f._p - RSTRING_PTR(str));
 #undef f
 

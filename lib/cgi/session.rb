@@ -308,7 +308,7 @@ class CGI
       @data[key]
     end
 
-    # Set the session date for key +key+.
+    # Set the session data for key +key+.
     def []=(key, val)
       @write_lock ||= true
       @data ||= @dbman.restore
@@ -437,7 +437,7 @@ class CGI
       def delete
         File::unlink @path+".lock" rescue nil
         File::unlink @path+".new" rescue nil
-        File::unlink @path rescue Errno::ENOENT
+        File::unlink @path rescue nil
       end
     end
 

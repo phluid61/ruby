@@ -764,10 +764,10 @@ defined
 	}
 	break;
       case DEFINED_ZSUPER:{
-	const rb_method_entry_t *me = GET_CFP()->me;
-	if (me) {
-	    VALUE klass = vm_search_normal_superclass(GET_CFP()->klass);
-	    ID id = me->def ? me->def->original_id : me->called_id;
+	rb_call_info_t cit;
+	if (vm_search_superclass(GET_CFP(), GET_ISEQ(), Qnil, &cit) == 0) {
+	    VALUE klass = cit.klass;
+	    ID id = cit.mid;
 	    if (rb_method_boundp(klass, id, 0)) {
 		expr_type = DEFINED_ZSUPER;
 	    }
@@ -818,7 +818,7 @@ checkmatch
     if (flag & VM_CHECKMATCH_ARRAY) {
 	int i;
 	for (i = 0; i < RARRAY_LEN(pattern); i++) {
-	    if (RTEST(check_match(RARRAY_PTR(pattern)[i], target, checkmatch_type))) {
+	    if (RTEST(check_match(RARRAY_AREF(pattern, i), target, checkmatch_type))) {
 		result = Qtrue;
 		break;
 	    }
@@ -1237,7 +1237,7 @@ setinlinecache
 (VALUE val)
 {
     if (ic->ic_value.value == Qundef) {
-	rb_ary_push(GET_ISEQ()->mark_ary, val);
+	rb_iseq_add_mark_object(GET_ISEQ(), val);
     }
     ic->ic_value.value = val;
     ic->ic_vmstat = GET_VM_STATE_VERSION() - ruby_vm_const_missing_count;
@@ -1272,7 +1272,7 @@ opt_case_dispatch
 				   BIGNUM_REDEFINED_OP_FLAG |
 				   STRING_REDEFINED_OP_FLAG)) {
 	    st_data_t val;
-	    if (st_lookup(RHASH_TBL(hash), key, &val)) {
+	    if (st_lookup(RHASH_TBL_RAW(hash), key, &val)) {
 		JUMP(FIX2INT((VALUE)val));
 	    }
 	    else {
@@ -1418,16 +1418,13 @@ opt_mult
 	    val = recv;
 	}
 	else {
-	    volatile long c;
 	    b = FIX2LONG(obj);
-	    c = a * b;
-
-	    if (FIXABLE(c) && c / a == b) {
-		val = LONG2FIX(c);
-	    }
-	    else {
+            if (MUL_OVERFLOW_FIXNUM_P(a, b)) {
 		val = rb_big_mul(rb_int2big(a), rb_int2big(b));
-	    }
+            }
+            else {
+		val = LONG2FIX(a * b);
+            }
 	}
     }
     else if (FLONUM_2_P(recv, obj) &&
@@ -1527,13 +1524,15 @@ opt_mod
 {
     if (FIXNUM_2_P(recv, obj) &&
 	BASIC_OP_UNREDEFINED_P(BOP_MOD, FIXNUM_REDEFINED_OP_FLAG )) {
-	long x, y, mod;
+	long x, y;
 
 	x = FIX2LONG(recv);
 	y = FIX2LONG(obj);
-	{
+	if (x > 0 && y > 0) {
+	    val = LONG2FIX(x % y);
+	} else {
 	    /* copied from numeric.c#fixdivmod */
-	    long div;
+	    long div, mod;
 
 	    if (y == 0)
 		rb_num_zerodiv();
@@ -1554,8 +1553,8 @@ opt_mod
 		mod += y;
 		div -= 1;
 	    }
+	    val = LONG2FIX(mod);
 	}
-	val = LONG2FIX(mod);
     }
     else if (FLONUM_2_P(recv, obj) &&
 	     BASIC_OP_UNREDEFINED_P(BOP_MOD, FLOAT_REDEFINED_OP_FLAG)) {

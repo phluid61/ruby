@@ -13,9 +13,14 @@
 
 static void rb_vm_check_redefinition_opt_method(const rb_method_entry_t *me, VALUE klass);
 
-static ID object_id;
-static ID removed, singleton_removed, undefined, singleton_undefined;
-static ID added, singleton_added, attached;
+#define object_id           idObject_id
+#define added               idMethod_added
+#define singleton_added     idSingleton_method_added
+#define removed             idMethod_removed
+#define singleton_removed   idSingleton_method_removed
+#define undefined           idMethod_undefined
+#define singleton_undefined idSingleton_method_undefined
+#define attached            id__attached__
 
 struct cache_entry {		/* method hash table. */
     VALUE filled_version;        /* filled state version */
@@ -503,6 +508,12 @@ search_method(VALUE klass, ID id, VALUE *defined_class_ptr)
     if (defined_class_ptr)
 	*defined_class_ptr = klass;
     return me;
+}
+
+rb_method_entry_t *
+rb_method_entry_at(VALUE klass, ID id)
+{
+    return lookup_method_table(klass, id);
 }
 
 /*
@@ -1263,7 +1274,9 @@ set_method_visibility(VALUE self, int argc, VALUE *argv, rb_method_flag_t ex)
     secure_visibility(self);
 
     if (argc == 0) {
-	rb_warning("%s with no argument is just ignored", rb_id2name(rb_frame_callee()));
+	rb_warning("%"PRIsVALUE" with no argument is just ignored",
+		   QUOTE_ID(rb_frame_callee()));
+	return;
     }
 
     for (i = 0; i < argc; i++) {
@@ -1374,7 +1387,7 @@ rb_mod_private(int argc, VALUE *argv, VALUE module)
 static VALUE
 rb_mod_public_method(int argc, VALUE *argv, VALUE obj)
 {
-    set_method_visibility(CLASS_OF(obj), argc, argv, NOEX_PUBLIC);
+    set_method_visibility(rb_singleton_class(obj), argc, argv, NOEX_PUBLIC);
     return obj;
 }
 
@@ -1400,7 +1413,7 @@ rb_mod_public_method(int argc, VALUE *argv, VALUE obj)
 static VALUE
 rb_mod_private_method(int argc, VALUE *argv, VALUE obj)
 {
-    set_method_visibility(CLASS_OF(obj), argc, argv, NOEX_PRIVATE);
+    set_method_visibility(rb_singleton_class(obj), argc, argv, NOEX_PRIVATE);
     return obj;
 }
 
@@ -1563,8 +1576,8 @@ rb_obj_respond_to(VALUE obj, ID id, int priv)
 			(FL_TEST(klass, FL_SINGLETON) ? '.' : '#'),
 			QUOTE_ID(id));
 		if (!NIL_P(location)) {
-		    VALUE path = RARRAY_PTR(location)[0];
-		    VALUE line = RARRAY_PTR(location)[1];
+		    VALUE path = RARRAY_AREF(location, 0);
+		    VALUE line = RARRAY_AREF(location, 1);
 		    if (!NIL_P(path)) {
 			rb_compile_warn(RSTRING_PTR(path), NUM2INT(line),
 					"respond_to? is defined here");
@@ -1673,15 +1686,6 @@ Init_eval_method(void)
 			     "public", top_public, -1);
     rb_define_private_method(rb_singleton_class(rb_vm_top_self()),
 			     "private", top_private, -1);
-
-    object_id = rb_intern("object_id");
-    added = rb_intern("method_added");
-    singleton_added = rb_intern("singleton_method_added");
-    removed = rb_intern("method_removed");
-    singleton_removed = rb_intern("singleton_method_removed");
-    undefined = rb_intern("method_undefined");
-    singleton_undefined = rb_intern("singleton_method_undefined");
-    attached = rb_intern("__attached__");
 
     {
 #define REPLICATE_METHOD(klass, id, noex) \
