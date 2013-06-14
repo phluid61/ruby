@@ -19,6 +19,8 @@
 #include "probes.h"
 #include "id.h"
 
+#include "timsort.h"
+
 #ifndef ARRAY_DEBUG
 # define NDEBUG
 #endif
@@ -2308,7 +2310,7 @@ rb_ary_sort_bang(VALUE ary)
 	data.ary = tmp;
 	data.opt_methods = 0;
 	data.opt_inited = 0;
-	ruby_qsort(RARRAY_PTR(tmp), len, sizeof(VALUE),
+	ruby_timsort(RARRAY_PTR(tmp), len, sizeof(VALUE),
 		   rb_block_given_p()?sort_1:sort_2, &data);
 
 	rb_ary_modify(ary);
