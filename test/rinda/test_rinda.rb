@@ -518,13 +518,8 @@ class TupleSpaceProxyTest < Test::Unit::TestCase
     signal = /mswin|mingw/ =~ RUBY_PLATFORM ? "KILL" : "TERM"
     Process.kill(signal, write) if write && status.nil?
     Process.kill(signal, take)  if take
-  end
-
-  def have_fork?
-    Process.fork {}
-    return true
-  rescue NotImplementedError
-    return false
+    Process.wait(write) if write && status.nil?
+    Process.wait(take)  if take
   end
 
   @server = DRb.primary_server || DRb.start_service
@@ -532,12 +527,18 @@ end
 
 module RingIPv6
   def prepare_ipv6(r)
-    Socket.getifaddrs.each do |ifaddr|
-      next unless ifaddr.addr
-      next unless ifaddr.addr.ipv6_linklocal?
-      next if ifaddr.name[0, 2] == "lo"
-      r.multicast_interface = ifaddr.ifindex
-      return
+    begin
+      Socket.getifaddrs.each do |ifaddr|
+        next unless ifaddr.addr
+        next unless ifaddr.addr.ipv6_linklocal?
+        next if ifaddr.name[0, 2] == "lo"
+        r.multicast_interface = ifaddr.ifindex
+        return ifaddr
+      end
+    rescue NotImplementedError
+      # ifindex() function may not be implemented on Windows.
+      return if
+        Socket.ip_address_list.any? { |addrinfo| addrinfo.ipv6? }
     end
     skip 'IPv6 not available'
   end
@@ -555,6 +556,40 @@ class TestRingServer < Test::Unit::TestCase
     # implementation-dependent
     @ts.instance_eval{@keeper.kill if @keeper}
     @rs.shutdown
+  end
+
+  def test_do_reply
+    called = nil
+
+    callback = proc { |ts|
+      called = ts
+    }
+
+    callback = DRb::DRbObject.new callback
+
+    @ts.write [:lookup_ring, callback]
+
+    @rs.do_reply
+
+    Thread.pass until called
+
+    assert_same @ts, called
+  end
+
+  def test_do_reply_local
+    called = nil
+
+    callback = proc { |ts|
+      called = ts
+    }
+
+    @ts.write [:lookup_ring, callback]
+
+    @rs.do_reply
+
+    Thread.pass until called
+
+    assert_same @ts, called
   end
 
   def test_make_socket_unicast
@@ -662,8 +697,13 @@ class TestRingFinger < Test::Unit::TestCase
   end
 
   def test_make_socket_ipv6_multicast
-    prepare_ipv6(@rf)
-    v6mc = @rf.make_socket('ff02::1')
+    ifaddr = prepare_ipv6(@rf)
+    begin
+      v6mc = @rf.make_socket("ff02::1")
+    rescue Errno::EINVAL
+      # somehow Debian 6.0.7 needs ifname
+      v6mc = @rf.make_socket("ff02::1%#{ifaddr.name}")
+    end
 
     assert_equal(1, v6mc.getsockopt(:IPPROTO_IPV6, :IPV6_MULTICAST_LOOP).int)
     assert_equal(1, v6mc.getsockopt(:IPPROTO_IPV6, :IPV6_MULTICAST_HOPS).int)
@@ -676,9 +716,14 @@ class TestRingFinger < Test::Unit::TestCase
   end
 
   def test_make_socket_ipv6_multicast_hops
-    prepare_ipv6(@rf)
+    ifaddr = prepare_ipv6(@rf)
     @rf.multicast_hops = 2
-    v6mc = @rf.make_socket('ff02::1')
+    begin
+      v6mc = @rf.make_socket("ff02::1")
+    rescue Errno::EINVAL
+      # somehow Debian 6.0.7 needs ifname
+      v6mc = @rf.make_socket("ff02::1%#{ifaddr.name}")
+    end
     assert_equal(2, v6mc.getsockopt(:IPPROTO_IPV6, :IPV6_MULTICAST_HOPS).int)
   end
 

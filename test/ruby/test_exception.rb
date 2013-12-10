@@ -28,7 +28,7 @@ class TestException < Test::Unit::TestCase
 
   def test_exception_in_rescue
     string = "this must be handled no.3"
-    e = assert_raise(RuntimeError) do
+    assert_raise_with_message(RuntimeError, string) do
       begin
         raise "exception in rescue clause"
       rescue
@@ -36,12 +36,11 @@ class TestException < Test::Unit::TestCase
       end
       assert(false)
     end
-    assert_equal(string, e.message)
   end
 
   def test_exception_in_ensure
     string = "exception in ensure clause"
-    e = assert_raise(RuntimeError) do
+    assert_raise_with_message(RuntimeError, string) do
       begin
         raise "this must be handled no.4"
       ensure
@@ -51,7 +50,6 @@ class TestException < Test::Unit::TestCase
       end
       assert(false)
     end
-    assert_equal(string, e.message)
   end
 
   def test_exception_ensure
@@ -290,6 +288,17 @@ end.join
     assert_equal(e.inspect, e.new.inspect)
   end
 
+  def test_to_s
+    e = StandardError.new("foo")
+    assert_equal("foo", e.to_s)
+
+    def (s = Object.new).to_s
+      "bar"
+    end
+    e = StandardError.new(s)
+    assert_equal("bar", e.to_s)
+  end
+
   def test_set_backtrace
     e = Exception.new
 
@@ -333,8 +342,10 @@ end.join
     bug3237 = '[ruby-core:29948]'
     str = "\u2600"
     id = :"\u2604"
-    e = assert_raise(NoMethodError) {str.__send__(id)}
-    assert_equal("undefined method `#{id}' for #{str.inspect}:String", e.message, bug3237)
+    msg = "undefined method `#{id}' for #{str.inspect}:String"
+    assert_raise_with_message(NoMethodError, msg, bug3237) do
+      str.__send__(id)
+    end
   end
 
   def test_errno
@@ -455,5 +466,54 @@ end.join
     e = NameError.new(o)
     s = e.to_s
     assert_equal(false, s.tainted?)
+  end
+
+  def m;
+    m &->{return 0};
+    42;
+  end
+
+  def test_stackoverflow
+    assert_raise(SystemStackError){m}
+  end
+
+  def test_machine_stackoverflow
+    bug9109 = '[ruby-dev:47804] [Bug #9109]'
+    assert_separately([], <<-SRC)
+    assert_raise(SystemStackError, #{bug9109.dump}) {
+      h = {a: ->{h[:a].call}}
+      h[:a].call
+    }
+    SRC
+  end
+
+  def test_cause
+    msg = "[Feature #8257]"
+    cause = nil
+    e = assert_raise(StandardError) {
+      begin
+        raise msg
+      rescue => e
+        cause = e.cause
+        raise StandardError
+      end
+    }
+    assert_nil(cause, msg)
+    cause = e.cause
+    assert_instance_of(RuntimeError, cause, msg)
+    assert_equal(msg, cause.message, msg)
+  end
+
+  def test_cause_reraised
+    msg = "[Feature #8257]"
+    cause = nil
+    e = assert_raise(RuntimeError) {
+      begin
+        raise msg
+      rescue => e
+        raise e
+      end
+    }
+    assert_not_same(e, e.cause, "#{msg}: should not be recursive")
   end
 end

@@ -5,7 +5,7 @@ module Psych
   # Scan scalars for built in types
   class ScalarScanner
     # Taken from http://yaml.org/type/timestamp.html
-    TIME = /^\d{4}-\d{1,2}-\d{1,2}([Tt]|\s+)\d{1,2}:\d\d:\d\d(\.\d*)?(\s*Z|[-+]\d{1,2}(:\d\d)?)?/
+    TIME = /^-?\d{4}-\d{1,2}-\d{1,2}(?:[Tt]|\s+)\d{1,2}:\d\d:\d\d(?:\.\d*)?(?:\s*(?:Z|[-+]\d{1,2}:?(?:\d\d)?))?$/
 
     # Taken from http://yaml.org/type/float.html
     FLOAT = /^(?:[-+]?([0-9][0-9_,]*)?\.[0-9]*([eE][-+][0-9]+)?(?# base 10)
@@ -28,7 +28,7 @@ module Psych
       @class_loader = class_loader
     end
 
-    # Tokenize +string+ returning the ruby object
+    # Tokenize +string+ returning the Ruby object
     def tokenize string
       return nil if string.empty?
       return string if @string_cache.key?(string)
@@ -95,7 +95,7 @@ module Psych
         end
         i
       when FLOAT
-        if string == '.'
+        if string =~ /\A[-+]?\.\Z/
           @string_cache[string] = true
           string
         else
@@ -123,7 +123,7 @@ module Psych
       klass = class_loader.load 'Time'
 
       date, time = *(string.split(/[ tT]/, 2))
-      (yy, m, dd) = date.split('-').map { |x| x.to_i }
+      (yy, m, dd) = date.match(/^(-?\d{4})-(\d{1,2})-(\d{1,2})/).captures.map { |x| x.to_i }
       md = time.match(/(\d+:\d+:\d+)(?:\.(\d*))?\s*(Z|[-+]\d+(:\d\d)?)?/)
 
       (hh, mm, ss) = md[1].split(':').map { |x| x.to_i }

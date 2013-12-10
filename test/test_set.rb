@@ -297,6 +297,50 @@ class TC_Set < Test::Unit::TestCase
     assert_equal(false, Set[].proper_subset?(Set[]))
   end
 
+  def assert_intersect(expected, set, other)
+    case expected
+    when true
+      assert_send([set, :intersect?, other])
+      assert_send([other, :intersect?, set])
+      assert_not_send([set, :disjoint?, other])
+      assert_not_send([other, :disjoint?, set])
+    when false
+      assert_not_send([set, :intersect?, other])
+      assert_not_send([other, :intersect?, set])
+      assert_send([set, :disjoint?, other])
+      assert_send([other, :disjoint?, set])
+    when Class
+      assert_raises(expected) {
+        set.intersect?(other)
+      }
+      assert_raises(expected) {
+        set.disjoint?(other)
+      }
+    else
+      raise ArgumentError, "%s: unsupported expected value: %s" % [__method__, expected.inspect]
+    end
+  end
+
+  def test_intersect?
+    set = Set[3,4,5]
+
+    assert_intersect(ArgumentError, set, 3)
+    assert_intersect(ArgumentError, set, [2,4,6])
+
+    assert_intersect(true, set, set)
+    assert_intersect(true, set, Set[2,4])
+    assert_intersect(true, set, Set[5,6,7])
+    assert_intersect(true, set, Set[1,2,6,8,4])
+
+    assert_intersect(false, set, Set[])
+    assert_intersect(false, set, Set[0,2])
+    assert_intersect(false, set, Set[0,2,6])
+    assert_intersect(false, set, Set[0,2,6,8,10])
+
+    # Make sure set hasn't changed
+    assert_equal(Set[3,4,5], set)
+  end
+
   def test_each
     ary = [1,3,5,7,10,20]
     set = Set.new(ary)
@@ -624,6 +668,9 @@ class TC_Enumerable < Test::Unit::TestCase
     set = ary.to_set { |o| o * -2 }
     assert_instance_of(Set, set)
     assert_equal([-10,-8,-6,-4,-2], set.sort)
+
+    assert_same set, set.to_set
+    assert_not_same set, set.to_set { |o| o }
 
     set = ary.to_set(SortedSet)
     assert_instance_of(SortedSet, set)

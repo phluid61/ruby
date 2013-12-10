@@ -177,7 +177,7 @@ class TestRand < Test::Unit::TestCase
   end
 
   def test_big_seed
-    assert_random_int(%w(1143843490), 0x100000000, 2**1000000-1)
+    assert_random_int(%w(2757555016), 0x100000000, 2**1000000-1)
   end
 
   def test_random_gc
@@ -437,6 +437,7 @@ END
   end
 
   def test_rand_reseed_on_fork
+    GC.start
     bug5661 = '[ruby-core:41209]'
 
     assert_fork_status(1, bug5661) {Random.rand(4)}
@@ -509,13 +510,11 @@ END
     assert_equal([2], (1..100).map {[1,2,3].sample(random: gen)}.uniq)
 
     def (gen = Object.new).rand(*) 100 end
-    e = assert_raise(RangeError) {[1,2,3].sample(random: gen)}
-    assert_match(/big 100\z/, e.message)
+    assert_raise_with_message(RangeError, /big 100\z/) {[1,2,3].sample(random: gen)}
 
     bug7903 = '[ruby-dev:47061] [Bug #7903]'
     def (gen = Object.new).rand(*) -1 end
-    e = assert_raise(RangeError) {[1,2,3].sample(random: gen)}
-    assert_match(/small -1\z/, e.message, bug7903)
+    assert_raise_with_message(RangeError, /small -1\z/, bug7903) {[1,2,3].sample(random: gen)}
 
     bug7935 = '[ruby-core:52779] [Bug #7935]'
     class << (gen = Object.new)

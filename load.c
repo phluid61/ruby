@@ -8,6 +8,7 @@
 #include "dln.h"
 #include "eval_intern.h"
 #include "probes.h"
+#include "node.h"
 
 VALUE ruby_dln_librefs;
 
@@ -202,7 +203,8 @@ features_index_add_single(VALUE short_feature, VALUE offset)
 	VALUE feature_indexes[2];
 	feature_indexes[0] = this_feature_index;
 	feature_indexes[1] = offset;
-	this_feature_index = rb_ary_tmp_new(numberof(feature_indexes));
+	this_feature_index = (VALUE)xcalloc(1, sizeof(struct RArray));
+	RBASIC(this_feature_index)->flags = T_ARRAY; /* fake VALUE, do not mark/sweep */
 	rb_ary_cat(this_feature_index, feature_indexes, numberof(feature_indexes));
 	st_insert(features_index, (st_data_t)short_feature_cstr, (st_data_t)this_feature_index);
     }
@@ -262,6 +264,11 @@ features_index_add(VALUE feature, VALUE offset)
 static int
 loaded_features_index_clear_i(st_data_t key, st_data_t val, st_data_t arg)
 {
+    VALUE obj = (VALUE)val;
+    if (!SPECIAL_CONST_P(obj)) {
+	rb_ary_free(obj);
+	xfree((void *)obj);
+    }
     xfree((char *)key);
     return ST_DELETE;
 }
@@ -482,6 +489,9 @@ rb_feature_p(const char *feature, const char *ext, int rb, int expanded, const c
 	else {
 	    VALUE bufstr;
 	    char *buf;
+	    static const char so_ext[][4] = {
+		".so", ".o",
+	    };
 
 	    if (ext && *ext) return 0;
 	    bufstr = rb_str_tmp_new(len + DLEXT_MAXLEN);
@@ -493,6 +503,14 @@ rb_feature_p(const char *feature, const char *ext, int rb, int expanded, const c
 		    rb_str_resize(bufstr, 0);
 		    if (fn) *fn = (const char*)data;
 		    return i ? 's' : 'r';
+		}
+	    }
+	    for (i = 0; i < numberof(so_ext); i++) {
+		strlcpy(buf + len, so_ext[i], DLEXT_MAXLEN + 1);
+		if (st_get_key(loading_tbl, (st_data_t)buf, &data)) {
+		    rb_str_resize(bufstr, 0);
+		    if (fn) *fn = (const char*)data;
+		    return 's';
 		}
 	    }
 	    rb_str_resize(bufstr, 0);
@@ -558,16 +576,15 @@ rb_provide(const char *feature)
 
 NORETURN(static void load_failed(VALUE));
 
-static void
-rb_load_internal(VALUE fname, int wrap)
+static inline void
+rb_load_internal0(rb_thread_t *th, VALUE fname, int wrap)
 {
     int state;
-    rb_thread_t *th = GET_THREAD();
     volatile VALUE wrapper = th->top_wrapper;
     volatile VALUE self = th->top_self;
     volatile int loaded = FALSE;
     volatile int mild_compile_error;
-#ifndef __GNUC__
+#if !defined __GNUC__
     rb_thread_t *volatile th0 = th;
 #endif
 
@@ -591,7 +608,7 @@ rb_load_internal(VALUE fname, int wrap)
 	VALUE iseq;
 
 	th->mild_compile_error++;
-	node = (NODE *)rb_load_file(RSTRING_PTR(fname));
+	node = (NODE *)rb_load_file_str(fname);
 	loaded = TRUE;
 	iseq = rb_iseq_new_top(node, rb_str_new2("<top (required)>"), fname, rb_realpath_internal(Qnil, fname, 1), Qfalse);
 	th->mild_compile_error--;
@@ -599,7 +616,7 @@ rb_load_internal(VALUE fname, int wrap)
     }
     POP_TAG();
 
-#ifndef __GNUC__
+#if !defined __GNUC__
     th = th0;
     fname = RB_GC_GUARD(fname);
 #endif
@@ -607,18 +624,24 @@ rb_load_internal(VALUE fname, int wrap)
     th->top_self = self;
     th->top_wrapper = wrapper;
 
-    if (!loaded && !FIXNUM_P(GET_THREAD()->errinfo)) {
+    if (!loaded && !FIXNUM_P(th->errinfo)) {
 	/* an error on loading don't include INT2FIX(TAG_FATAL) see r35625 */
-	rb_exc_raise(GET_THREAD()->errinfo);
+	rb_exc_raise(th->errinfo);
     }
     if (state) {
 	rb_vm_jump_tag_but_local_jump(state);
     }
 
-    if (!NIL_P(GET_THREAD()->errinfo)) {
+    if (!NIL_P(th->errinfo)) {
 	/* exception during load */
 	rb_exc_raise(th->errinfo);
     }
+}
+
+static void
+rb_load_internal(VALUE fname, int wrap)
+{
+    rb_load_internal0(GET_THREAD(), fname, wrap);
 }
 
 void
@@ -704,10 +727,17 @@ load_lock(const char *ftptr)
 	st_insert(loading_tbl, (st_data_t)ftptr, data);
 	return (char *)ftptr;
     }
+    else if (RB_TYPE_P((VALUE)data, T_NODE) && nd_type((VALUE)data) == NODE_MEMO) {
+	NODE *memo = RNODE(data);
+	void (*init)(void) = (void (*)(void))memo->nd_cfnc;
+	data = (st_data_t)rb_thread_shield_new();
+	st_insert(loading_tbl, (st_data_t)ftptr, data);
+	(*init)();
+	return (char *)"";
+    }
     if (RTEST(ruby_verbose)) {
 	rb_warning("loading in progress, circular require considered harmful - %s", ftptr);
-	/* TODO: display to $stderr, not stderr in C */
-	rb_backtrace();
+	rb_backtrace_print_to(rb_stderr);
     }
     switch (rb_thread_shield_wait((VALUE)data)) {
       case Qfalse:
@@ -877,13 +907,16 @@ search_required(VALUE fname, volatile VALUE *path, int safe_level)
     switch (type) {
       case 0:
 	if (ft)
-	    break;
+	    goto statically_linked;
 	ftptr = RSTRING_PTR(tmp);
 	return rb_feature_p(ftptr, 0, FALSE, TRUE, 0);
 
       default:
-	if (ft)
-	    break;
+	if (ft) {
+	  statically_linked:
+	    if (loading) *path = rb_filesystem_str_new_cstr(loading);
+	    return ft;
+	}
       case 1:
 	ext = strrchr(ftptr = RSTRING_PTR(tmp), '.');
 	if (rb_feature_p(ftptr, ext, !--type, TRUE, &loading) && !loading)
@@ -941,7 +974,8 @@ rb_require_safe(VALUE fname, int safe)
 					   rb_sourceline());
 	}
 
-	found = search_required(fname, &path, safe);
+	path = rb_str_encode_ospath(fname);
+	found = search_required(path, &path, safe);
 
 	if (RUBY_DTRACE_FIND_REQUIRE_RETURN_ENABLED()) {
 	    RUBY_DTRACE_FIND_REQUIRE_RETURN(StringValuePtr(fname),
@@ -951,6 +985,10 @@ rb_require_safe(VALUE fname, int safe)
 	if (found) {
 	    if (!path || !(ftptr = load_lock(RSTRING_PTR(path)))) {
 		result = Qfalse;
+	    }
+	    else if (!*ftptr) {
+		rb_provide_feature(path);
+		result = Qtrue;
 	    }
 	    else {
 		switch (found) {
@@ -1000,24 +1038,30 @@ rb_require(const char *fname)
     return rb_require_safe(fn, rb_safe_level());
 }
 
-static VALUE
-init_ext_call(VALUE arg)
+static int
+register_init_ext(st_data_t *key, st_data_t *value, st_data_t init, int existing)
 {
-    SCOPE_SET(NOEX_PUBLIC);
-    (*(void (*)(void))arg)();
-    return Qnil;
+    const char *name = (char *)*key;
+    if (existing) {
+	/* already registered */
+	rb_warn("%s is already registered", name);
+    }
+    else {
+	*value = (st_data_t)NEW_MEMO(init, 0, 0);
+	*key = (st_data_t)ruby_strdup(name);
+    }
+    return ST_CONTINUE;
 }
 
 RUBY_FUNC_EXPORTED void
 ruby_init_ext(const char *name, void (*init)(void))
 {
-    char* const lock_key = load_lock(name);
-    if (lock_key) {
-	rb_vm_call_cfunc(rb_vm_top_self(), init_ext_call, (VALUE)init,
-			 0, rb_str_new2(name));
-	rb_provide(name);
-	load_unlock(lock_key, 1);
+    st_table *loading_tbl = get_loading_table();
+
+    if (!loading_tbl) {
+	GET_VM()->loading_table = loading_tbl = st_init_strtable();
     }
+    st_update(loading_tbl, (st_data_t)name, register_init_ext, (st_data_t)init);
 }
 
 /*

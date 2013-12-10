@@ -247,11 +247,13 @@ class TestModule < Test::Unit::TestCase
       "",
       ":",
       ["String::", "[Bug #7573]"],
+      "\u3042",
     ].each do |name, msg|
-      e = assert_raises(NameError, "#{msg}#{': ' if msg}wrong constant name #{name.dump}") {
+      expected = "wrong constant name %s" % quote(name)
+      msg = "#{msg}#{': ' if msg}wrong constant name #{name.dump}"
+      assert_raise_with_message(NameError, expected, msg) {
         Object.const_get name
       }
-      assert_equal("wrong constant name %s" % name, e.message)
     end
   end
 
@@ -296,7 +298,7 @@ class TestModule < Test::Unit::TestCase
   end
 
   def test_nested_bad_class
-    assert_raises(TypeError) do
+    assert_raise(TypeError) do
       self.class.const_get([User, 'USER', 'Foo'].join('::'))
     end
   end
@@ -349,6 +351,22 @@ class TestModule < Test::Unit::TestCase
     b = a.dup
 
     refute_equal original, b.inspect, bug6454
+  end
+
+  def test_public_include
+    assert_nothing_raised('#8846') do
+      Module.new.include(Module.new { def foo; end }).instance_methods == [:foo]
+    end
+  end
+
+  def test_include_toplevel
+    assert_separately([], <<-EOS)
+      Mod = Module.new {def foo; :include_foo end}
+      TOPLEVEL_BINDING.eval('include Mod')
+
+      assert_equal(:include_foo, TOPLEVEL_BINDING.eval('foo'))
+      assert_equal([Object, Mod], Object.ancestors.slice(0, 2))
+    EOS
   end
 
   def test_included_modules
@@ -608,8 +626,9 @@ class TestModule < Test::Unit::TestCase
     bug5084 = '[ruby-dev:44200]'
     assert_raise(TypeError, bug5084) { c1.const_get(1) }
     bug7574 = '[ruby-dev:46749]'
-    e = assert_raise(NameError) { Object.const_get("String\0") }
-    assert_equal("wrong constant name \"String\\u0000\"", e.message, bug7574)
+    assert_raise_with_message(NameError, "wrong constant name \"String\\u0000\"", bug7574) {
+      Object.const_get("String\0")
+    }
   end
 
   def test_const_defined_invalid_name
@@ -618,8 +637,9 @@ class TestModule < Test::Unit::TestCase
     bug5084 = '[ruby-dev:44200]'
     assert_raise(TypeError, bug5084) { c1.const_defined?(1) }
     bug7574 = '[ruby-dev:46749]'
-    e = assert_raise(NameError) { Object.const_defined?("String\0") }
-    assert_equal("wrong constant name \"String\\u0000\"", e.message, bug7574)
+    assert_raise_with_message(NameError, "wrong constant name \"String\\u0000\"", bug7574) {
+      Object.const_defined?("String\0")
+    }
   end
 
   def test_const_get_no_inherited
@@ -682,6 +702,7 @@ class TestModule < Test::Unit::TestCase
     c.class_eval('@@foo = :foo')
     assert_equal(:foo, c.class_variable_get(:@@foo))
     assert_raise(NameError) { c.class_variable_get(:@@bar) } # c.f. instance_variable_get
+    assert_raise(NameError) { c.class_variable_get(:'@@') }
     assert_raise(NameError) { c.class_variable_get('@@') }
     assert_raise(NameError) { c.class_variable_get(:foo) }
     assert_raise(NameError) { c.class_variable_get("bar") }
@@ -698,6 +719,7 @@ class TestModule < Test::Unit::TestCase
     c = Class.new
     c.class_variable_set(:@@foo, :foo)
     assert_equal(:foo, c.class_eval('@@foo'))
+    assert_raise(NameError) { c.class_variable_set(:'@@', 1) }
     assert_raise(NameError) { c.class_variable_set('@@', 1) }
     assert_raise(NameError) { c.class_variable_set(:foo, 1) }
     assert_raise(NameError) { c.class_variable_set("bar", 1) }
@@ -716,6 +738,8 @@ class TestModule < Test::Unit::TestCase
     c.class_eval('@@foo = :foo')
     assert_equal(true, c.class_variable_defined?(:@@foo))
     assert_equal(false, c.class_variable_defined?(:@@bar))
+    assert_raise(NameError) { c.class_variable_defined?(:'@@') }
+    assert_raise(NameError) { c.class_variable_defined?('@@') }
     assert_raise(NameError) { c.class_variable_defined?(:foo) }
     assert_raise(NameError) { c.class_variable_defined?("bar") }
     assert_raise(TypeError) { c.class_variable_defined?(1) }
@@ -1167,6 +1191,14 @@ class TestModule < Test::Unit::TestCase
     assert_equal(1, c.x, bug3406)
   end
 
+  def test_attr_writer_with_no_arguments
+    bug8540 = "[ruby-core:55543]"
+    c = Class.new do
+      attr_writer :foo
+    end
+    assert_raise(ArgumentError) { c.new.send :foo= }
+  end
+
   def test_private_constant
     c = Class.new
     c.const_set(:FOO, "foo")
@@ -1372,6 +1404,12 @@ class TestModule < Test::Unit::TestCase
     assert_equal(expected, obj.m1)
   end
 
+  def test_public_prepend
+    assert_nothing_raised('#8846') do
+      Class.new.prepend(Module.new)
+    end
+  end
+
   def test_prepend_inheritance
     bug6654 = '[ruby-core:45914]'
     a = labeled_module("a")
@@ -1519,6 +1557,21 @@ class TestModule < Test::Unit::TestCase
     assert_nothing_raised(NoMethodError, bug8005) {a.send :foo}
   end
 
+  def test_prepend_visibility_inherited
+    bug8238 = '[ruby-core:54105] [Bug #8238]'
+    assert_separately [], <<-"end;", timeout: 3
+      class A
+        def foo() A; end
+        private :foo
+      end
+      class B < A
+        public :foo
+        prepend Module.new
+      end
+      assert_equal(A, B.new.foo, "#{bug8238}")
+    end;
+  end
+
   def test_prepend_included_modules
     bug8025 = '[ruby-core:53158] [Bug #8025]'
     mixin = labeled_module("mixin")
@@ -1601,16 +1654,22 @@ class TestModule < Test::Unit::TestCase
   end
 
   def test_invalid_attr
-    %w[
+    %W[
       foo?
       @foo
       @@foo
       $foo
+      \u3042$
     ].each do |name|
-      assert_raises(NameError) do
+      assert_raise_with_message(NameError, /#{Regexp.quote(quote(name))}/) do
         Module.new { attr_accessor name.to_sym }
       end
     end
+  end
+
+  private def quote(name)
+    encoding = Encoding.default_internal || Encoding.default_external
+    (name.encoding == encoding || name.ascii_only?) ? name : name.inspect
   end
 
   class AttrTest
@@ -1741,15 +1800,52 @@ class TestModule < Test::Unit::TestCase
     RUBY
   end
 
+  def test_return_value_of_define_method
+    retvals = []
+    Class.new.class_eval do
+      retvals << define_method(:foo){}
+      retvals << define_method(:bar, instance_method(:foo))
+    end
+    assert_equal :foo, retvals[0]
+    assert_equal :bar, retvals[1]
+  end
+
+  def test_return_value_of_define_singleton_method
+    retvals = []
+    Class.new do
+      retvals << define_singleton_method(:foo){}
+      retvals << define_singleton_method(:bar, method(:foo))
+    end
+    assert_equal :foo, retvals[0]
+    assert_equal :bar, retvals[1]
+  end
+
+  def test_prepend_gc
+    assert_separately [], %{
+      module Foo
+      end
+      class Object
+        prepend Foo
+      end
+      GC.start     # make created T_ICLASS old (or remembered shady)
+      class Object # add methods into T_ICLASS (need WB if it is old)
+        def foo; end
+        attr_reader :bar
+      end
+      1_000_000.times{''} # cause GC
+    }
+  end
+
   private
 
   def assert_top_method_is_private(method)
-    top = eval("self", TOPLEVEL_BINDING)
-    methods = top.singleton_class.private_instance_methods(false)
-    assert(methods.include?(method), "#{method} should be private")
+    assert_separately [], %{
+      methods = singleton_class.private_instance_methods(false)
+      assert_include(methods, :#{method}, ":#{method} should be private")
 
-    assert_in_out_err([], <<-INPUT, [], /private method `#{method}' called for main:Object \(NoMethodError\)/)
-      self.#{method}
-    INPUT
+      assert_raise_with_message(NoMethodError, "private method `#{method}' called for main:Object") {
+        self.#{method}
+      }
+    }
   end
 end

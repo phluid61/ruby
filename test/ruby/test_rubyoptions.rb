@@ -3,7 +3,6 @@ require 'test/unit'
 
 require 'tmpdir'
 require 'tempfile'
-require 'pathname'
 
 require_relative 'envutil'
 
@@ -16,7 +15,7 @@ class TestRubyOptions < Test::Unit::TestCase
 
   def with_tmpchdir
     Dir.mktmpdir {|d|
-      d = Pathname.new(d).realpath.to_s
+      d = File.realpath(d)
       Dir.chdir(d) {
         yield d
       }
@@ -410,7 +409,9 @@ class TestRubyOptions < Test::Unit::TestCase
 
   def test_notfound
     notexist = "./notexist.rb"
-    rubybin = Regexp.quote(EnvUtil.rubybin)
+    rubybin = EnvUtil.rubybin.dup
+    rubybin.gsub!(%r(/), '\\') if /mswin|mingw/ =~ RUBY_PLATFORM
+    rubybin = Regexp.quote(rubybin)
     pat = Regexp.quote(notexist)
     bug1573 = '[ruby-core:23717]'
     assert_file.not_exist?(notexist)
@@ -461,7 +462,7 @@ class TestRubyOptions < Test::Unit::TestCase
     skip "platform dependent feature" if /linux|freebsd|netbsd|openbsd|darwin/ !~ RUBY_PLATFORM
 
     with_tmpchdir do
-      write_file("test-script", "$0 = 'hello world'; sleep 60")
+      write_file("test-script", "$0 = 'hello world'; /test-script/ =~ Process.argv0 or $0 = 'Process.argv0 changed!'; sleep 60")
 
       pid = spawn(EnvUtil.rubybin, "test-script")
       ps = nil
@@ -472,10 +473,30 @@ class TestRubyOptions < Test::Unit::TestCase
       end
       assert_match(/hello world/, ps)
       Process.kill :KILL, pid
+      Process.wait(pid)
     end
   end
 
-  def test_segv_test
+  def test_setproctitle
+    skip "platform dependent feature" if /linux|freebsd|netbsd|openbsd|darwin/ !~ RUBY_PLATFORM
+
+    with_tmpchdir do
+      write_file("test-script", "$_0 = $0.dup; Process.setproctitle('hello world'); $0 == $_0 or Process.setproctitle('$0 changed!'); sleep 60")
+
+      pid = spawn(EnvUtil.rubybin, "test-script")
+      ps = nil
+      10.times do
+        sleep 0.1
+        ps = `ps -p #{pid} -o command`
+        break if /hello world/ =~ ps
+      end
+      assert_match(/hello world/, ps)
+      Process.kill :KILL, pid
+      Process.wait(pid)
+    end
+  end
+
+  module SEGVTest
     opts = {}
     if /mswin|mingw/ =~ RUBY_PLATFORM
       additional = '[\s\w\.\']*'
@@ -483,9 +504,11 @@ class TestRubyOptions < Test::Unit::TestCase
       opts[:rlimit_core] = 0
       additional = ""
     end
-    expected_stderr =
+    ExecOptions = opts.freeze
+
+    ExpectedStderr =
       %r(\A
-      -e:(?:1:)?\s\[BUG\]\sSegmentation\sfault\n
+      -e:(?:1:)?\s\[BUG\]\sSegmentation\sfault.*\n
       #{ Regexp.quote(RUBY_DESCRIPTION) }\n\n
       (?:--\s(?:.+\n)*\n)?
       --\sControl\sframe\sinformation\s-+\n
@@ -504,21 +527,38 @@ class TestRubyOptions < Test::Unit::TestCase
       \[NOTE\]\n
       You\smay\shave\sencountered\sa\sbug\sin\sthe\sRuby\sinterpreter\sor\sextension\slibraries.\n
       Bug\sreports\sare\swelcome.\n
-      For\sdetails:\shttp:\/\/www.ruby-lang.org/bugreport.html\n
+      For\sdetails:\shttp:\/\/.*\.ruby-lang\.org/.*\n
       \n
       (?:#{additional})
       \z
       )x
+  end
+
+  def test_segv_test
+    opts = SEGVTest::ExecOptions.dup
+    expected_stderr = SEGVTest::ExpectedStderr
+
     assert_in_out_err(["--disable-gems", "-e", "Process.kill :SEGV, $$"], "", [], expected_stderr, nil, opts)
+  end
+
+  def test_segv_loaded_features
+    opts = SEGVTest::ExecOptions.dup
 
     bug7402 = '[ruby-core:49573]'
     status = assert_in_out_err(['-e', 'class Bogus; def to_str; exit true; end; end',
+                                '-e', '$".clear',
                                 '-e', '$".unshift Bogus.new',
+                                '-e', '(p $"; abort) unless $".size == 1',
                                 '-e', 'Process.kill :SEGV, $$'],
-                               "", //, /#<Bogus:/,
+                               "", [], /#<Bogus:/,
                                nil,
                                opts)
     assert_not_predicate(status, :success?, "segv but success #{bug7402}")
+  end
+
+  def test_segv_setproctitle
+    opts = SEGVTest::ExecOptions.dup
+    expected_stderr = SEGVTest::ExpectedStderr
 
     bug7597 = '[ruby-dev:46786]'
     Tempfile.create(["test_ruby_test_bug7597", ".rb"]) {|t|

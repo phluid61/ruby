@@ -106,6 +106,8 @@ class TestBignum < Test::Unit::TestCase
     assert_equal("nd075ib45k86g" ,18446744073709551616.to_s(31), "[ruby-core:10686]")
     assert_equal("1777777777777777777777" ,18446744073709551615.to_s(8))
     assert_equal("-1777777777777777777777" ,-18446744073709551615.to_s(8))
+    assert_match(/\A10{99}1\z/, (10**100+1).to_s)
+    assert_match(/\A10{900}9{100}\z/, (10**1000+(10**100-1)).to_s)
   end
 
   b = 2**64
@@ -122,6 +124,12 @@ class TestBignum < Test::Unit::TestCase
   T64P = b.coerce(T64 - 1).first # 18446744073709551615
   T1024  = b.coerce(2**1024).first
   T1024P = b.coerce(T1024 - 1).first
+
+  f = b
+  while Bignum === f-1
+    f = f >> 1
+  end
+  FIXNUM_MAX = f-1
 
   def test_prepare
     assert_instance_of(Bignum, T_ZERO)
@@ -454,6 +462,7 @@ class TestBignum < Test::Unit::TestCase
     assert_equal(T32 + T31, T32 | T31)
     assert_equal(-T31, (-T32) | (-T31))
     assert_equal(T64 + T32, T32 | T64)
+    assert_equal(FIXNUM_MAX, T_ZERO | FIXNUM_MAX)
   end
 
   def test_xor
@@ -526,6 +535,11 @@ class TestBignum < Test::Unit::TestCase
     assert_equal(-1, -(2**31) >> 32)
   end
 
+  def test_shift_bigshift
+    big = 2**300
+    assert_equal(2**65538 / (2**65537), 2**65538 >> big.coerce(65537).first)
+  end
+
   def test_aref
     assert_equal(0, (2**32)[0])
     assert_equal(0, (2**32)[2**32])
@@ -563,6 +577,9 @@ class TestBignum < Test::Unit::TestCase
   end
 
   def test_interrupt_during_to_s
+    if defined?(Bignum::GMP_VERSION)
+      return # GMP doesn't support interrupt during an operation.
+    end
     time = Time.now
     start_flag = false
     end_flag = false
@@ -581,6 +598,9 @@ class TestBignum < Test::Unit::TestCase
   end
 
   def test_interrupt_during_bigdivrem
+    if defined?(Bignum::GMP_VERSION)
+      return # GMP doesn't support interrupt during an operation.
+    end
     return unless Process.respond_to?(:kill)
     begin
       trace = []
@@ -614,8 +634,7 @@ class TestBignum < Test::Unit::TestCase
     if (big = 2**31-1).is_a?(Fixnum)
       return
     end
-    e = assert_raise(RangeError) {(1 << big).to_s}
-    assert_match(/too big to convert/, e.message)
+    assert_raise_with_message(RangeError, /too big to convert/) {(1 << big).to_s}
   end
 
   def test_fix_fdiv

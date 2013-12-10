@@ -401,7 +401,7 @@ get_hash(volatile VALUE *hash, int argc, const VALUE *argv)
  *  For more complex formatting, Ruby supports a reference by name.
  *  %<name>s style uses format style, but %{name} style doesn't.
  *
- *  Exapmles:
+ *  Examples:
  *    sprintf("%<foo>d : %<bar>f", { :foo => 1, :bar => 2 })
  *      #=> 1 : 2.000000
  *    sprintf("%{foo}f", { :foo => 1 })
@@ -856,8 +856,8 @@ rb_str_format(int argc, const VALUE *argv, VALUE fmt)
                                  (!bignum ? v < 0 : RBIGNUM_NEGATIVE_P(val))))
                             numdigits++;
                         tmp = rb_str_new(NULL, numdigits);
-                        valsign = rb_integer_pack_2comp(val, RSTRING_PTR(tmp), RSTRING_LEN(tmp),
-                                1, CHAR_BIT-numbits, INTEGER_PACK_BIG_ENDIAN);
+                        valsign = rb_integer_pack(val, RSTRING_PTR(tmp), RSTRING_LEN(tmp),
+                                1, CHAR_BIT-numbits, INTEGER_PACK_2COMP | INTEGER_PACK_BIG_ENDIAN);
                         for (i = 0; i < RSTRING_LEN(tmp); i++)
                             RSTRING_PTR(tmp)[i] = ruby_digitmap[((unsigned char *)RSTRING_PTR(tmp))[i]];
                         s = RSTRING_PTR(tmp);
@@ -1171,6 +1171,7 @@ ruby__sfvextra(rb_printf_buffer *fp, size_t valsize, void *valp, long *sz, int s
     }
     else {
 	value = rb_obj_as_string(value);
+	if (sign == ' ') value = QUOTE(value);
     }
     enc = rb_enc_compatible(result, value);
     if (enc) {

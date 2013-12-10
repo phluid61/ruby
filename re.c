@@ -236,9 +236,9 @@ rb_memsearch(const void *x0, long m, const void *y0, long n, rb_encoding *enc)
 	return 0;
     }
     else if (m == 1) {
-	const unsigned char *ys;
+	const unsigned char *ys = memchr(y, *x, n);
 
-	if (ys = memchr(y, *x, n))
+	if (ys)
 	    return ys - y;
 	else
 	    return -1;
@@ -307,10 +307,10 @@ rb_char_to_option_kcode(int c, int *option, int *kcode)
         *kcode = rb_ascii8bit_encindex();
         return (*option = ARG_ENCODING_NONE);
       case 'e':
-	*kcode = rb_enc_find_index("EUC-JP");
+	*kcode = ENCINDEX_EUC_JP;
 	break;
       case 's':
-	*kcode = rb_enc_find_index("Windows-31J");
+	*kcode = ENCINDEX_Windows_31J;
 	break;
       case 'u':
 	*kcode = rb_utf8_encindex();
@@ -597,8 +597,30 @@ rb_reg_to_s(VALUE re)
     }
 
     rb_str_buf_cat2(str, ":");
-    rb_reg_expr_str(str, (char*)ptr, len, enc, NULL);
-    rb_str_buf_cat2(str, ")");
+    if (rb_enc_asciicompat(enc)) {
+	rb_reg_expr_str(str, (char*)ptr, len, enc, NULL);
+	rb_str_buf_cat2(str, ")");
+    }
+    else {
+	const char *s, *e;
+	char *paren;
+	ptrdiff_t n;
+	rb_str_buf_cat2(str, ")");
+	rb_enc_associate(str, rb_usascii_encoding());
+	str = rb_str_encode(str, rb_enc_from_encoding(enc), 0, Qnil);
+
+	/* backup encoded ")" to paren */
+	s = RSTRING_PTR(str);
+	e = RSTRING_END(str);
+	s = rb_enc_left_char_head(s, e-1, e, enc);
+	n = e - s;
+	paren = ALLOCA_N(char, n);
+	memcpy(paren, s, n);
+	rb_str_resize(str, RSTRING_LEN(str) - n);
+
+	rb_reg_expr_str(str, (char*)ptr, len, enc, NULL);
+	rb_str_buf_cat(str, paren, n);
+    }
     rb_enc_copy(str, re);
 
     OBJ_INFECT(str, re);
@@ -610,7 +632,7 @@ rb_reg_raise(const char *s, long len, const char *err, VALUE re)
 {
     volatile VALUE desc = rb_reg_desc(s, len, re);
 
-    rb_raise(rb_eRegexpError, "%s: %s", err, RSTRING_PTR(desc));
+    rb_raise(rb_eRegexpError, "%s: %"PRIsVALUE, err, desc);
 }
 
 static VALUE
@@ -2438,8 +2460,7 @@ rb_reg_initialize(VALUE obj, const char *s, long len, rb_encoding *enc,
 			  options & ARG_REG_OPTION_MASK, err,
 			  sourcefile, sourceline);
     if (!re->ptr) return -1;
-    re->src = rb_enc_str_new(s, len, enc);
-    OBJ_FREEZE(re->src);
+    OBJ_WRITE(obj, &re->src, rb_fstring(rb_enc_str_new(s, len, enc)));
     RB_GC_GUARD(unescaped);
     return 0;
 }
@@ -2470,10 +2491,10 @@ rb_reg_initialize_str(VALUE obj, VALUE str, int options, onig_errmsg_buffer err,
 static VALUE
 rb_reg_s_alloc(VALUE klass)
 {
-    NEWOBJ_OF(re, struct RRegexp, klass, T_REGEXP);
+    NEWOBJ_OF(re, struct RRegexp, klass, T_REGEXP | (RGENGC_WB_PROTECTED_REGEXP ? FL_WB_PROTECTED : 0));
 
     re->ptr = 0;
-    re->src = 0;
+    OBJ_WRITE(re, &re->src, 0);
     re->usecnt = 0;
 
     return (VALUE)re;
@@ -3254,6 +3275,9 @@ rb_reg_s_union(VALUE self, VALUE args0)
  *     Regexp.union("skiing", "sledding")   #=> /skiing|sledding/
  *     Regexp.union(["skiing", "sledding"]) #=> /skiing|sledding/
  *     Regexp.union(/dogs/, /cats/i)        #=> /(?-mix:dogs)|(?i-mx:cats)/
+ *
+ *  Note: the arguments for ::union will try to be converted into a regular
+ *  expression literal via #to_regexp.
  */
 static VALUE
 rb_reg_s_union_m(VALUE self, VALUE args)

@@ -264,6 +264,29 @@ rb_warn_m(int argc, VALUE *argv, VALUE exc)
     return Qnil;
 }
 
+#define MAX_BUG_REPORTERS 0x100
+
+static struct bug_reporters {
+    void (*func)(FILE *out, void *data);
+    void *data;
+} bug_reporters[MAX_BUG_REPORTERS];
+
+static int bug_reporters_size;
+
+int
+rb_bug_reporter_add(void (*func)(FILE *, void *), void *data)
+{
+    struct bug_reporters *reporter;
+    if (bug_reporters_size >= MAX_BUG_REPORTERS) {
+	return 0; /* failed to register */
+    }
+    reporter = &bug_reporters[bug_reporters_size++];
+    reporter->func = func;
+    reporter->data = data;
+
+    return 1;
+}
+
 static void
 report_bug(const char *file, int line, const char *fmt, va_list args)
 {
@@ -281,9 +304,16 @@ report_bug(const char *file, int line, const char *fmt, va_list args)
 	snprintf(buf, 256, "\n%s\n\n", ruby_description);
 	fputs(buf, out);
 
-
 	rb_vm_bugreport();
 
+	/* call additional bug reporters */
+	{
+	    int i;
+	    for (i=0; i<bug_reporters_size; i++) {
+		struct bug_reporters *reporter = &bug_reporters[i];
+		(*reporter->func)(out, reporter->data);
+	    }
+	}
 	fprintf(out, REPORTBUG_MSG);
     }
 }
@@ -611,11 +641,9 @@ static VALUE
 exc_to_s(VALUE exc)
 {
     VALUE mesg = rb_attr_get(exc, rb_intern("mesg"));
-    VALUE r = Qnil;
 
     if (NIL_P(mesg)) return rb_class_name(CLASS_OF(exc));
-    r = rb_String(mesg);
-    return r;
+    return rb_String(mesg);
 }
 
 /*
@@ -721,7 +749,8 @@ rb_check_backtrace(VALUE bt)
 	    rb_raise(rb_eTypeError, err);
 	}
 	for (i=0;i<RARRAY_LEN(bt);i++) {
-	    if (!RB_TYPE_P(RARRAY_AREF(bt, i), T_STRING)) {
+	    VALUE e = RARRAY_AREF(bt, i);
+	    if (!RB_TYPE_P(e, T_STRING)) {
 		rb_raise(rb_eTypeError, err);
 	    }
 	}
@@ -749,6 +778,14 @@ VALUE
 rb_exc_set_backtrace(VALUE exc, VALUE bt)
 {
     return exc_set_backtrace(exc, bt);
+}
+
+VALUE
+exc_cause(VALUE exc)
+{
+    ID id_cause;
+    CONST_ID(id_cause, "cause");
+    return rb_attr_get(exc, id_cause);
 }
 
 static VALUE
@@ -962,24 +999,6 @@ name_err_name(VALUE self)
 
 /*
  * call-seq:
- *  name_error.to_s   -> string
- *
- * Produce a nicely-formatted string representing the +NameError+.
- */
-
-static VALUE
-name_err_to_s(VALUE exc)
-{
-    VALUE mesg = rb_attr_get(exc, rb_intern("mesg"));
-    VALUE str = mesg;
-
-    if (NIL_P(mesg)) return rb_class_name(CLASS_OF(exc));
-    StringValue(str);
-    return str;
-}
-
-/*
- * call-seq:
  *   NoMethodError.new(msg, name [, args])  -> no_method_error
  *
  * Construct a NoMethodError exception for a method of the given name
@@ -1022,6 +1041,7 @@ static const rb_data_type_t name_err_mesg_data_type = {
 	name_err_mesg_free,
 	name_err_mesg_memsize,
     },
+    NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 /* :nodoc: */
@@ -1587,14 +1607,14 @@ syserr_eqq(VALUE self, VALUE exc)
  *
  *     foo = "bar"
  *     proc = Proc.new do
- *       $SAFE = 4
- *       foo.gsub! "a", "*"
+ *       $SAFE = 3
+ *       foo.untaint
  *     end
  *     proc.call
  *
  *  <em>raises the exception:</em>
  *
- *     SecurityError: Insecure: can't modify string
+ *     SecurityError: Insecure: Insecure operation `untaint' at level 3
  */
 
 /*
@@ -1730,6 +1750,7 @@ Init_Exception(void)
     rb_define_method(rb_eException, "inspect", exc_inspect, 0);
     rb_define_method(rb_eException, "backtrace", exc_backtrace, 0);
     rb_define_method(rb_eException, "set_backtrace", exc_set_backtrace, 1);
+    rb_define_method(rb_eException, "cause", exc_cause, 0);
 
     rb_eSystemExit  = rb_define_class("SystemExit", rb_eException);
     rb_define_method(rb_eSystemExit, "initialize", exit_initialize, -1);
@@ -1759,7 +1780,6 @@ Init_Exception(void)
     rb_eNameError     = rb_define_class("NameError", rb_eStandardError);
     rb_define_method(rb_eNameError, "initialize", name_err_initialize, -1);
     rb_define_method(rb_eNameError, "name", name_err_name, 0);
-    rb_define_method(rb_eNameError, "to_s", name_err_to_s, 0);
     rb_cNameErrorMesg = rb_define_class_under(rb_eNameError, "message", rb_cData);
     rb_define_singleton_method(rb_cNameErrorMesg, "!", rb_name_err_mesg_new, NAME_ERR_MESG_COUNT);
     rb_define_method(rb_cNameErrorMesg, "==", name_err_mesg_equal, 1);
@@ -1936,9 +1956,16 @@ void
 rb_sys_fail_path_in(const char *func_name, VALUE path)
 {
     int n = errno;
-    VALUE args[2];
 
     errno = 0;
+    rb_syserr_fail_path_in(func_name, n, path);
+}
+
+void
+rb_syserr_fail_path_in(const char *func_name, int n, VALUE path)
+{
+    VALUE args[2];
+
     if (!path) path = Qnil;
     if (n == 0) {
 	const char *s = !NIL_P(path) ? RSTRING_PTR(path) : "";
@@ -2029,10 +2056,6 @@ rb_check_frozen(VALUE obj)
 void
 rb_error_untrusted(VALUE obj)
 {
-    if (rb_safe_level() >= 4) {
-	rb_raise(rb_eSecurityError, "Insecure: can't modify %s",
-		 rb_obj_classname(obj));
-    }
 }
 
 #undef rb_check_trusted

@@ -39,11 +39,11 @@ static void native_mutex_unlock(pthread_mutex_t *lock);
 static int native_mutex_trylock(pthread_mutex_t *lock);
 static void native_mutex_initialize(pthread_mutex_t *lock);
 static void native_mutex_destroy(pthread_mutex_t *lock);
-static void native_cond_signal(rb_thread_cond_t *cond);
-static void native_cond_broadcast(rb_thread_cond_t *cond);
-static void native_cond_wait(rb_thread_cond_t *cond, pthread_mutex_t *mutex);
-static void native_cond_initialize(rb_thread_cond_t *cond, int flags);
-static void native_cond_destroy(rb_thread_cond_t *cond);
+static void native_cond_signal(rb_nativethread_cond_t *cond);
+static void native_cond_broadcast(rb_nativethread_cond_t *cond);
+static void native_cond_wait(rb_nativethread_cond_t *cond, pthread_mutex_t *mutex);
+static void native_cond_initialize(rb_nativethread_cond_t *cond, int flags);
+static void native_cond_destroy(rb_nativethread_cond_t *cond);
 static void rb_thread_wakeup_timer_thread_low(void);
 static pthread_t timer_thread_id;
 
@@ -253,7 +253,7 @@ native_mutex_destroy(pthread_mutex_t *lock)
 }
 
 static void
-native_cond_initialize(rb_thread_cond_t *cond, int flags)
+native_cond_initialize(rb_nativethread_cond_t *cond, int flags)
 {
 #ifdef HAVE_PTHREAD_COND_INIT
     int r;
@@ -284,7 +284,7 @@ native_cond_initialize(rb_thread_cond_t *cond, int flags)
 }
 
 static void
-native_cond_destroy(rb_thread_cond_t *cond)
+native_cond_destroy(rb_nativethread_cond_t *cond)
 {
 #ifdef HAVE_PTHREAD_COND_INIT
     int r = pthread_cond_destroy(&cond->cond);
@@ -305,7 +305,7 @@ native_cond_destroy(rb_thread_cond_t *cond)
  */
 
 static void
-native_cond_signal(rb_thread_cond_t *cond)
+native_cond_signal(rb_nativethread_cond_t *cond)
 {
     int r;
     do {
@@ -317,7 +317,7 @@ native_cond_signal(rb_thread_cond_t *cond)
 }
 
 static void
-native_cond_broadcast(rb_thread_cond_t *cond)
+native_cond_broadcast(rb_nativethread_cond_t *cond)
 {
     int r;
     do {
@@ -329,7 +329,7 @@ native_cond_broadcast(rb_thread_cond_t *cond)
 }
 
 static void
-native_cond_wait(rb_thread_cond_t *cond, pthread_mutex_t *mutex)
+native_cond_wait(rb_nativethread_cond_t *cond, pthread_mutex_t *mutex)
 {
     int r = pthread_cond_wait(&cond->cond, mutex);
     if (r != 0) {
@@ -338,7 +338,7 @@ native_cond_wait(rb_thread_cond_t *cond, pthread_mutex_t *mutex)
 }
 
 static int
-native_cond_timedwait(rb_thread_cond_t *cond, pthread_mutex_t *mutex, struct timespec *ts)
+native_cond_timedwait(rb_nativethread_cond_t *cond, pthread_mutex_t *mutex, struct timespec *ts)
 {
     int r;
 
@@ -360,7 +360,7 @@ native_cond_timedwait(rb_thread_cond_t *cond, pthread_mutex_t *mutex, struct tim
 }
 
 static struct timespec
-native_cond_timeout(rb_thread_cond_t *cond, struct timespec timeout_rel)
+native_cond_timeout(rb_nativethread_cond_t *cond, struct timespec timeout_rel)
 {
     int ret;
     struct timeval tv;
@@ -418,7 +418,7 @@ native_cond_timeout(rb_thread_cond_t *cond, struct timespec timeout_rel)
 #ifdef USE_SIGNAL_THREAD_LIST
 static void add_signal_thread_list(rb_thread_t *th);
 static void remove_signal_thread_list(rb_thread_t *th);
-static rb_thread_lock_t signal_thread_list_lock;
+static rb_nativethread_lock_t signal_thread_list_lock;
 #endif
 
 static pthread_key_t ruby_native_thread_key;
@@ -485,13 +485,58 @@ static rb_thread_t *register_cached_thread_and_wait(void);
 #elif defined HAVE_PTHREAD_GET_STACKADDR_NP && defined HAVE_PTHREAD_GET_STACKSIZE_NP
 #define STACKADDR_AVAILABLE 1
 #undef MAINSTACKADDR_AVAILABLE
-#define MAINSTACKADDR_AVAILABLE 0
+#define MAINSTACKADDR_AVAILABLE 1
 void *pthread_get_stackaddr_np(pthread_t);
 size_t pthread_get_stacksize_np(pthread_t);
 #elif defined HAVE_THR_STKSEGMENT || defined HAVE_PTHREAD_STACKSEG_NP
 #define STACKADDR_AVAILABLE 1
 #elif defined HAVE_PTHREAD_GETTHRDS_NP
 #define STACKADDR_AVAILABLE 1
+#elif defined __ia64 && defined _HPUX_SOURCE
+#include <sys/dyntune.h>
+
+#define STACKADDR_AVAILABLE 1
+
+/*
+ * Do not lower the thread's stack to PTHREAD_STACK_MIN,
+ * otherwise one would receive a 'sendsig: useracc failed.'
+ * and a coredump.
+ */
+#undef PTHREAD_STACK_MIN
+
+#define HAVE_PTHREAD_ATTR_GET_NP 1
+#undef HAVE_PTHREAD_ATTR_GETSTACK
+
+/*
+ * As the PTHREAD_STACK_MIN is undefined and
+ * noone touches the default stacksize,
+ * it is just fine to use the default.
+ */
+#define pthread_attr_get_np(thid, attr) 0
+
+/*
+ * Using value of sp is very rough... To make it more real,
+ * addr would need to be aligned to vps_pagesize.
+ * The vps_pagesize is 'Default user page size (kBytes)'
+ * and could be retrieved by gettune().
+ */
+static int
+hpux_attr_getstackaddr(const pthread_attr_t *attr, void **addr)
+{
+    static uint64_t pagesize;
+    size_t size;
+
+    if (!pagesize) {
+	if (gettune("vps_pagesize", &pagesize)) {
+	    pagesize = 16;
+	}
+	pagesize *= 1024;
+    }
+    pthread_attr_getstacksize(attr, &size);
+    *addr = (void *)((size_t)((char *)_Asm_get_sp() - size) & ~(pagesize - 1));
+    return 0;
+}
+#define pthread_attr_getstackaddr(attr, addr) hpux_attr_getstackaddr(attr, addr)
 #endif
 
 #ifndef MAINSTACKADDR_AVAILABLE
@@ -500,6 +545,9 @@ size_t pthread_get_stacksize_np(pthread_t);
 # else
 #   define MAINSTACKADDR_AVAILABLE 0
 # endif
+#endif
+#if MAINSTACKADDR_AVAILABLE && !defined(get_main_stack)
+# define get_main_stack(addr, size) get_stack(addr, size)
 #endif
 
 #ifdef STACKADDR_AVAILABLE
@@ -532,12 +580,11 @@ get_stack(void **addr, size_t *size)
     CHECK_ERR(pthread_attr_get_np(pthread_self(), &attr));
 # ifdef HAVE_PTHREAD_ATTR_GETSTACK
     CHECK_ERR(pthread_attr_getstack(&attr, addr, size));
-    STACK_DIR_UPPER((void)0, (void)(*addr = (char *)*addr + *size));
 # else
     CHECK_ERR(pthread_attr_getstackaddr(&attr, addr));
     CHECK_ERR(pthread_attr_getstacksize(&attr, size));
-    STACK_DIR_UPPER((void)0, (void)(*addr = (char *)*addr + *size));
 # endif
+    STACK_DIR_UPPER((void)0, (void)(*addr = (char *)*addr + *size));
     pthread_attr_destroy(&attr);
 #elif (defined HAVE_PTHREAD_GET_STACKADDR_NP && defined HAVE_PTHREAD_GET_STACKSIZE_NP) /* MacOS X */
     pthread_t th = pthread_self();
@@ -572,7 +619,7 @@ get_stack(void **addr, size_t *size)
 #endif
 
 static struct {
-    rb_thread_id_t id;
+    rb_nativethread_id_t id;
     size_t stack_maxsize;
     VALUE *stack_start;
 #ifdef __ia64
@@ -630,7 +677,20 @@ ruby_init_stack(volatile VALUE *addr
         native_main_thread.register_stack_start = (VALUE*)bsp;
     }
 #endif
+#if MAINSTACKADDR_AVAILABLE
+    if (native_main_thread.stack_maxsize) return;
     {
+	void* stackaddr;
+	size_t size;
+	if (get_main_stack(&stackaddr, &size) == 0) {
+	    native_main_thread.stack_maxsize = size;
+	    native_main_thread.stack_start = stackaddr;
+	    return;
+	}
+    }
+#endif
+    {
+#if defined(HAVE_GETRLIMIT)
 #if defined(PTHREAD_STACK_DEFAULT)
 # if PTHREAD_STACK_DEFAULT < RUBY_STACK_SPACE*5
 #  error "PTHREAD_STACK_DEFAULT is too small"
@@ -639,15 +699,7 @@ ruby_init_stack(volatile VALUE *addr
 #else
 	size_t size = RUBY_VM_THREAD_VM_STACK_SIZE;
 #endif
-	size_t space = space_size(size);
-#if MAINSTACKADDR_AVAILABLE
-	void* stackaddr;
-	STACK_GROW_DIR_DETECTION;
-	if (get_stack(&stackaddr, &size) == 0) {
-            space = STACK_DIR_UPPER((char *)addr - (char *)stackaddr, (char *)stackaddr - (char *)addr);
-        }
-	native_main_thread.stack_maxsize = size - space;
-#elif defined(HAVE_GETRLIMIT)
+	size_t space;
 	int pagesize = getpagesize();
 	struct rlimit rlim;
         STACK_GROW_DIR_DETECTION;
@@ -694,7 +746,7 @@ ruby_init_stack(volatile VALUE *addr
 static int
 native_thread_init_stack(rb_thread_t *th)
 {
-    rb_thread_id_t curr = pthread_self();
+    rb_nativethread_id_t curr = pthread_self();
 
     if (pthread_equal(curr, native_main_thread.id)) {
 	th->machine_stack_start = native_main_thread.stack_start;
@@ -708,6 +760,11 @@ native_thread_init_stack(rb_thread_t *th)
 	if (get_stack(&start, &size) == 0) {
 	    th->machine_stack_start = start;
 	    th->machine_stack_maxsize = size;
+	}
+#elif defined get_stack_of
+	if (!th->machine_stack_maxsize) {
+	    native_mutex_lock(&th->interrupt_lock);
+	    native_mutex_unlock(&th->interrupt_lock);
 	}
 #else
 	rb_raise(rb_eNotImpError, "ruby engine can initialize only in the main thread");
@@ -764,7 +821,7 @@ thread_start_func_1(void *th_ptr)
 
 struct cached_thread_entry {
     volatile rb_thread_t **th_area;
-    rb_thread_cond_t *cond;
+    rb_nativethread_cond_t *cond;
     struct cached_thread_entry *next;
 };
 
@@ -776,7 +833,7 @@ struct cached_thread_entry *cached_thread_root;
 static rb_thread_t *
 register_cached_thread_and_wait(void)
 {
-    rb_thread_cond_t cond = { PTHREAD_COND_INITIALIZER, };
+    rb_nativethread_cond_t cond = { PTHREAD_COND_INITIALIZER, };
     volatile rb_thread_t *th_area = 0;
     struct timeval tv;
     struct timespec ts;
@@ -801,21 +858,14 @@ register_cached_thread_and_wait(void)
 	native_cond_timedwait(&cond, &thread_cache_lock, &ts);
 
 	{
-	    struct cached_thread_entry *e = cached_thread_root;
-	    struct cached_thread_entry *prev = cached_thread_root;
+	    struct cached_thread_entry *e, **prev = &cached_thread_root;
 
-	    while (e) {
+	    while ((e = *prev) != 0) {
 		if (e == entry) {
-		    if (prev == cached_thread_root) {
-			cached_thread_root = e->next;
-		    }
-		    else {
-			prev->next = e->next;
-		    }
+		    *prev = e->next;
 		    break;
 		}
-		prev = e;
-		e = e->next;
+		prev = &e->next;
 	    }
 	}
 
@@ -863,7 +913,12 @@ native_thread_create(rb_thread_t *th)
 	thread_debug("create (use cached thread): %p\n", (void *)th);
     }
     else {
+#ifdef HAVE_PTHREAD_ATTR_INIT
 	pthread_attr_t attr;
+	pthread_attr_t *const attrp = &attr;
+#else
+	pthread_attr_t *const attrp = NULL;
+#endif
 	const size_t stack_size = th->vm->default_params.thread_machine_stack_size;
 	const size_t space = space_size(stack_size);
 
@@ -885,10 +940,18 @@ native_thread_create(rb_thread_t *th)
 	CHECK_ERR(pthread_attr_setinheritsched(&attr, PTHREAD_INHERIT_SCHED));
 # endif
 	CHECK_ERR(pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED));
-
-	err = pthread_create(&th->thread_id, &attr, thread_start_func_1, th);
-#else
-	err = pthread_create(&th->thread_id, NULL, thread_start_func_1, th);
+#endif
+#ifdef get_stack_of
+	native_mutex_lock(&th->interrupt_lock);
+#endif
+	err = pthread_create(&th->thread_id, attrp, thread_start_func_1, th);
+#ifdef get_stack_of
+	if (!err) {
+	    get_stack_of(th->thread_id,
+			 &th->machine_stack_start,
+			 &th->machine_stack_maxsize);
+	}
+	native_mutex_unlock(&th->interrupt_lock);
 #endif
 	thread_debug("create: %p (%d)\n", (void *)th, err);
 #ifdef HAVE_PTHREAD_ATTR_INIT
@@ -957,7 +1020,7 @@ native_sleep(rb_thread_t *th, struct timeval *timeout_tv)
 {
     struct timespec timeout;
     pthread_mutex_t *lock = &th->interrupt_lock;
-    rb_thread_cond_t *cond = &th->native_thread_data.sleep_cond;
+    rb_nativethread_cond_t *cond = &th->native_thread_data.sleep_cond;
 
     if (timeout_tv) {
 	struct timespec timeout_rel;
@@ -1344,7 +1407,7 @@ void rb_thread_wakeup_timer_thread(void) {}
 static void rb_thread_wakeup_timer_thread_low(void) {}
 
 static pthread_mutex_t timer_thread_lock;
-static rb_thread_cond_t timer_thread_cond;
+static rb_nativethread_cond_t timer_thread_cond;
 
 static inline void
 timer_thread_sleep(rb_global_vm_lock_t* unused)
@@ -1358,6 +1421,15 @@ timer_thread_sleep(rb_global_vm_lock_t* unused)
 }
 #endif /* USE_SLEEPY_TIMER_THREAD */
 
+#if defined(__linux__) && defined(PR_SET_NAME)
+# define SET_THREAD_NAME(name) prctl(PR_SET_NAME, name)
+#elif defined(__APPLE__)
+/* pthread_setname_np() on Darwin does not have target thread argument */
+# define SET_THREAD_NAME(name) pthread_setname_np(name)
+#else
+# define SET_THREAD_NAME(name) (void)0
+#endif
+
 static void *
 thread_timer(void *p)
 {
@@ -1365,9 +1437,7 @@ thread_timer(void *p)
 
     if (TT_DEBUG) WRITE_CONST(2, "start timer thread\n");
 
-#if defined(__linux__) && defined(PR_SET_NAME)
-    prctl(PR_SET_NAME, "ruby-timer-thr");
-#endif
+    SET_THREAD_NAME("ruby-timer-thr");
 
 #if !USE_SLEEPY_TIMER_THREAD
     native_mutex_initialize(&timer_thread_lock);
@@ -1405,7 +1475,7 @@ rb_thread_create_timer_thread(void)
 
 	err = pthread_attr_init(&attr);
 	if (err != 0) {
-	    fprintf(stderr, "[FATAL] Failed to initialize pthread attr(errno: %d)\n", err);
+	    fprintf(stderr, "[FATAL] Failed to initialize pthread attr: %s\n", strerror(err));
 	    exit(EXIT_FAILURE);
         }
 # ifdef PTHREAD_STACK_MIN
@@ -1438,7 +1508,7 @@ rb_thread_create_timer_thread(void)
 	err = pthread_create(&timer_thread_id, NULL, thread_timer, &GET_VM()->gvl);
 #endif
 	if (err != 0) {
-	    fprintf(stderr, "[FATAL] Failed to create timer thread (errno: %d)\n", err);
+	    fprintf(stderr, "[FATAL] Failed to create timer thread: %s\n", strerror(err));
 	    exit(EXIT_FAILURE);
 	}
 #ifdef HAVE_PTHREAD_ATTR_INIT
@@ -1533,6 +1603,12 @@ rb_reserved_fd_p(int fd)
 #else
     return 0;
 #endif
+}
+
+rb_nativethread_id_t
+rb_nativethread_self(void)
+{
+    return pthread_self();
 }
 
 #endif /* THREAD_SYSTEM_DEPENDENT_IMPLEMENTATION */

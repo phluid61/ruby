@@ -37,7 +37,7 @@ module SecureRandom
   #
   # The argument _n_ specifies the length of the result string.
   #
-  # If _n_ is not specified, 16 is assumed.
+  # If _n_ is not specified or is nil, 16 is assumed.
   # It may be larger in future.
   #
   # The result may contain any byte: "\x00" - "\xff".
@@ -51,11 +51,11 @@ module SecureRandom
     n = n ? n.to_int : 16
 
     if defined? OpenSSL::Random
-      @pid = 0 if !defined?(@pid)
+      @pid = 0 unless defined?(@pid)
       pid = $$
-      if @pid != pid
-        now = Time.now
-        ary = [now.to_i, now.nsec, @pid, pid]
+      unless @pid == pid
+        now = Process.clock_gettime(Process::CLOCK_REALTIME, :nanosecond)
+        ary = [now, @pid, pid]
         OpenSSL::Random.random_add(ary.join("").to_s, 0.0)
         @pid = pid
       end
@@ -73,7 +73,7 @@ module SecureRandom
           end
           @has_urandom = true
           ret = f.read(n)
-          if ret.length != n
+          unless ret.length == n
             raise NotImplementedError, "Unexpected partial read from random device: only #{ret.length} for #{n} bytes"
           end
           return ret
@@ -83,7 +83,7 @@ module SecureRandom
       end
     end
 
-    if !defined?(@has_win32)
+    unless defined?(@has_win32)
       begin
         require 'Win32API'
 
@@ -116,12 +116,12 @@ module SecureRandom
     raise NotImplementedError, "No random device"
   end
 
-  # SecureRandom.hex generates a random hex string.
+  # SecureRandom.hex generates a random hexadecimal string.
   #
-  # The argument _n_ specifies the length of the random length.
-  # The length of the result string is twice of _n_.
+  # The argument _n_ specifies the length, in bytes, of the random number to be generated.
+  # The length of the resulting hexadecimal string is twice _n_.
   #
-  # If _n_ is not specified, 16 is assumed.
+  # If _n_ is not specified or is nil, 16 is assumed.
   # It may be larger in future.
   #
   # The result may contain 0-9 and a-f.
@@ -137,10 +137,10 @@ module SecureRandom
 
   # SecureRandom.base64 generates a random base64 string.
   #
-  # The argument _n_ specifies the length of the random length.
-  # The length of the result string is about 4/3 of _n_.
+  # The argument _n_ specifies the length, in bytes, of the random number
+  # to be generated. The length of the result string is about 4/3 of _n_.
   #
-  # If _n_ is not specified, 16 is assumed.
+  # If _n_ is not specified or is nil, 16 is assumed.
   # It may be larger in future.
   #
   # The result may contain A-Z, a-z, 0-9, "+", "/" and "=".
@@ -158,10 +158,10 @@ module SecureRandom
 
   # SecureRandom.urlsafe_base64 generates a random URL-safe base64 string.
   #
-  # The argument _n_ specifies the length of the random length.
-  # The length of the result string is about 4/3 of _n_.
+  # The argument _n_ specifies the length, in bytes, of the random number
+  # to be generated. The length of the result string is about 4/3 of _n_.
   #
-  # If _n_ is not specified, 16 is assumed.
+  # If _n_ is not specified or is nil, 16 is assumed.
   # It may be larger in future.
   #
   # The boolean argument _padding_ specifies the padding.
@@ -186,7 +186,7 @@ module SecureRandom
     s = [random_bytes(n)].pack("m*")
     s.delete!("\n")
     s.tr!("+/", "-_")
-    s.delete!("=") if !padding
+    s.delete!("=") unless padding
     s
   end
 

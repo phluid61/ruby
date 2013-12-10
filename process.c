@@ -68,7 +68,9 @@
 # include "nacl/unistd.h"
 #endif
 
-
+#ifdef HAVE_SYS_TIME_H
+#include <sys/time.h>
+#endif
 #ifdef HAVE_SYS_TIMES_H
 #include <sys/times.h>
 #endif
@@ -78,6 +80,10 @@
 #endif
 #ifdef HAVE_GRP_H
 #include <grp.h>
+#endif
+
+#ifdef __APPLE__
+# include <mach/mach_time.h>
 #endif
 
 #if defined(HAVE_TIMES) || defined(_WIN32)
@@ -188,6 +194,14 @@ static rb_gid_t obj2gid(VALUE id);
 #   undef p_gid_from_name
 #   define p_gid_from_name rb_f_notimplement
 # endif
+#endif
+
+#if SIZEOF_CLOCK_T == SIZEOF_INT
+typedef unsigned int unsigned_clock_t;
+#elif SIZEOF_CLOCK_T == SIZEOF_LONG
+typedef unsigned long unsigned_clock_t;
+#elif defined(HAVE_LONG_LONG) && SIZEOF_CLOCK_T == SIZEOF_LONG_LONG
+typedef unsigned LONG_LONG unsigned_clock_t;
 #endif
 
 /*
@@ -1067,7 +1081,7 @@ before_exec_non_async_signal_safe(void)
 {
     if (!forked_child) {
 	/*
-	 * On Mac OS X 10.5.x (Leopard) or earlier, exec() may return ENOTSUPP
+	 * On Mac OS X 10.5.x (Leopard) or earlier, exec() may return ENOTSUP
 	 * if the process have multiple threads. Therefore we have to kill
 	 * internal threads temporary. [ruby-core:10583]
 	 * This is also true on Haiku. It returns Errno::EPERM against exec()
@@ -1276,7 +1290,7 @@ proc_exec_sh(const char *str, VALUE envp_str)
     }
 
 #ifdef _WIN32
-    rb_w32_spawn(P_OVERLAY, (char *)str, 0);
+    rb_w32_uspawn(P_OVERLAY, (char *)str, 0);
     return -1;
 #else
 #if defined(__CYGWIN32__) || defined(__EMX__)
@@ -1350,9 +1364,28 @@ memsize_exec_arg(const void *ptr)
 }
 
 static const rb_data_type_t exec_arg_data_type = {
-  "exec_arg",
-  {mark_exec_arg, free_exec_arg, memsize_exec_arg},
+    "exec_arg",
+    {mark_exec_arg, free_exec_arg, memsize_exec_arg},
+    NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY
 };
+
+#ifdef _WIN32
+# define DEFAULT_PROCESS_ENCODING rb_utf8_encoding()
+#endif
+#ifdef DEFAULT_PROCESS_ENCODING
+# define EXPORT_STR(str) rb_str_export_to_enc((str), DEFAULT_PROCESS_ENCODING)
+# define EXPORT_DUP(str) export_dup(str)
+static VALUE
+export_dup(VALUE str)
+{
+    VALUE newstr = EXPORT_STR(str);
+    if (newstr == str) newstr = rb_str_dup(str);
+    return newstr;
+}
+#else
+# define EXPORT_STR(str) (str)
+# define EXPORT_DUP(str) rb_str_dup(str)
+#endif
 
 #if !defined(HAVE_FORK) && defined(HAVE_SPAWNV)
 # define USE_SPAWNV 1
@@ -1365,7 +1398,7 @@ static const rb_data_type_t exec_arg_data_type = {
 
 #if USE_SPAWNV
 #if defined(_WIN32)
-#define proc_spawn_cmd_internal(argv, prog) rb_w32_aspawn(P_NOWAIT, (prog), (argv))
+#define proc_spawn_cmd_internal(argv, prog) rb_w32_uaspawn(P_NOWAIT, (prog), (argv))
 #else
 static rb_pid_t
 proc_spawn_cmd_internal(char **argv, char *prog)
@@ -1404,7 +1437,7 @@ proc_spawn_cmd(char **argv, VALUE prog, struct rb_execarg *eargp)
 	if (eargp->new_pgroup_given && eargp->new_pgroup_flag) {
 	    flags = CREATE_NEW_PROCESS_GROUP;
 	}
-	pid = rb_w32_aspawn_flags(P_NOWAIT, prog ? RSTRING_PTR(prog) : 0, argv, flags);
+	pid = rb_w32_uaspawn_flags(P_NOWAIT, prog ? RSTRING_PTR(prog) : 0, argv, flags);
 #else
 	pid = proc_spawn_cmd_internal(argv, prog ? RSTRING_PTR(prog) : 0);
 #endif
@@ -1413,7 +1446,7 @@ proc_spawn_cmd(char **argv, VALUE prog, struct rb_execarg *eargp)
 }
 
 #if defined(_WIN32)
-#define proc_spawn_sh(str) rb_w32_spawn(P_NOWAIT, (str), 0)
+#define proc_spawn_sh(str) rb_w32_uspawn(P_NOWAIT, (str), 0)
 #else
 static rb_pid_t
 proc_spawn_sh(char *str)
@@ -1560,7 +1593,7 @@ check_exec_redirect(VALUE key, VALUE val, struct rb_execarg *eargp)
                 flags = rb_to_int(flags);
             perm = rb_ary_entry(val, 2);
             perm = NIL_P(perm) ? INT2FIX(0644) : rb_to_int(perm);
-            param = hide_obj(rb_ary_new3(3, hide_obj(rb_str_dup(path)),
+            param = hide_obj(rb_ary_new3(3, hide_obj(EXPORT_DUP(path)),
                                             flags, perm));
             eargp->fd_open = check_exec_redirect1(eargp->fd_open, key, param);
         }
@@ -1576,7 +1609,7 @@ check_exec_redirect(VALUE key, VALUE val, struct rb_execarg *eargp)
         else
             flags = INT2NUM(O_RDONLY);
         perm = INT2FIX(0644);
-        param = hide_obj(rb_ary_new3(3, hide_obj(rb_str_dup(path)),
+        param = hide_obj(rb_ary_new3(3, hide_obj(EXPORT_DUP(path)),
                                         flags, perm));
         eargp->fd_open = check_exec_redirect1(eargp->fd_open, key, param);
         break;
@@ -1682,7 +1715,7 @@ rb_execarg_addopt(VALUE execarg_obj, VALUE key, VALUE val)
             }
             FilePathValue(val);
             eargp->chdir_given = 1;
-            eargp->chdir_dir = hide_obj(rb_str_dup(val));
+            eargp->chdir_dir = hide_obj(EXPORT_DUP(val));
         }
         else if (id == rb_intern("umask")) {
 	    mode_t cmask = NUM2MODET(val);
@@ -1912,6 +1945,9 @@ check_exec_env_i(st_data_t st_key, st_data_t st_val, st_data_t arg)
     if (!NIL_P(val))
         StringValueCStr(val);
 
+    key = EXPORT_STR(key);
+    if (!NIL_P(val)) val = EXPORT_STR(val);
+
     rb_ary_push(env, hide_obj(rb_assoc_new(key, val)));
 
     return ST_CONTINUE;
@@ -2023,6 +2059,7 @@ rb_exec_fillarg(VALUE prog, int argc, VALUE *argv, VALUE env, VALUE opthash, VAL
         eargp->env_modification = env;
     }
 
+    prog = EXPORT_STR(prog);
     eargp->use_shell = argc == 0;
     if (eargp->use_shell)
         eargp->invoke.sh.shell_script = prog;
@@ -2155,8 +2192,13 @@ rb_exec_fillarg(VALUE prog, int argc, VALUE *argv, VALUE env, VALUE opthash, VAL
         argv_buf = rb_str_buf_new(0);
         hide_obj(argv_buf);
         for (i = 0; i < argc; i++) {
-            rb_str_buf_cat2(argv_buf, StringValueCStr(argv[i]));
-            rb_str_buf_cat(argv_buf, "", 1); /* append '\0' */
+	    VALUE arg = argv[i];
+	    const char *s = StringValueCStr(arg);
+#ifdef DEFAULT_PROCESS_ENCODING
+	    arg = EXPORT_STR(arg);
+	    s = RSTRING_PTR(arg);
+#endif
+	    rb_str_buf_cat(argv_buf, s, RSTRING_LEN(arg) + 1); /* include '\0' */
         }
         eargp->invoke.cmd.argv_buf = argv_buf;
     }
@@ -2274,24 +2316,26 @@ rb_execarg_fixup(VALUE execarg_obj)
         }
         hide_obj(envtbl);
         if (envopts != Qfalse) {
-            st_table *stenv = RHASH_TBL(envtbl);
+	    st_table *stenv = RHASH_TBL_RAW(envtbl);
             long i;
             for (i = 0; i < RARRAY_LEN(envopts); i++) {
                 VALUE pair = RARRAY_AREF(envopts, i);
                 VALUE key = RARRAY_AREF(pair, 0);
                 VALUE val = RARRAY_AREF(pair, 1);
                 if (NIL_P(val)) {
-                    st_data_t stkey = (st_data_t)key;
-                    st_delete(stenv, &stkey, NULL);
+		    st_data_t stkey = (st_data_t)key;
+		    st_delete(stenv, &stkey, NULL);
                 }
                 else {
-                    st_insert(stenv, (st_data_t)key, (st_data_t)val);
+		    st_insert(stenv, (st_data_t)key, (st_data_t)val);
+		    OBJ_WRITTEN(envtbl, Qundef, key);
+		    OBJ_WRITTEN(envtbl, Qundef, val);
                 }
             }
         }
         envp_buf = rb_str_buf_new(0);
         hide_obj(envp_buf);
-        st_foreach(RHASH_TBL(envtbl), fill_envp_buf_i, (st_data_t)envp_buf);
+        st_foreach(RHASH_TBL_RAW(envtbl), fill_envp_buf_i, (st_data_t)envp_buf);
         envp_str = rb_str_buf_new(sizeof(char*) * (RHASH_SIZE(envtbl) + 1));
         hide_obj(envp_str);
         p = RSTRING_PTR(envp_buf);
@@ -2458,28 +2502,16 @@ redirect_dup(int oldfd)
     ttyprintf("dup(%d) => %d\n", oldfd, ret);
     return ret;
 }
-#else
-#define redirect_dup(oldfd) dup(oldfd)
-#endif
 
-#if defined(DEBUG_REDIRECT) || defined(_WIN32)
 static int
 redirect_dup2(int oldfd, int newfd)
 {
     int ret;
     ret = dup2(oldfd, newfd);
-    if (newfd >= 0 && newfd <= 2)
-	SetStdHandle(newfd == 0 ? STD_INPUT_HANDLE : newfd == 1 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE, (HANDLE)rb_w32_get_osfhandle(newfd));
-#if defined(DEBUG_REDIRECT)
     ttyprintf("dup2(%d, %d)\n", oldfd, newfd);
-#endif
     return ret;
 }
-#else
-#define redirect_dup2(oldfd, newfd) dup2((oldfd), (newfd))
-#endif
 
-#if defined(DEBUG_REDIRECT)
 static int
 redirect_close(int fd)
 {
@@ -2499,6 +2531,8 @@ redirect_open(const char *pathname, int flags, mode_t perm)
 }
 
 #else
+#define redirect_dup(oldfd) dup(oldfd)
+#define redirect_dup2(oldfd, newfd) dup2((oldfd), (newfd))
 #define redirect_close(fd) close(fd)
 #define redirect_open(pathname, flags, perm) open((pathname), (flags), (perm))
 #endif
@@ -2856,7 +2890,7 @@ run_exec_rlimit(VALUE ary, struct rb_execarg *sargp, char *errmsg, size_t errmsg
 
 #if !defined(HAVE_FORK)
 static VALUE
-save_env_i(VALUE i, VALUE ary, int argc, VALUE *argv)
+save_env_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, ary))
 {
     rb_ary_push(ary, hide_obj(rb_ary_dup(argv[0])));
     return Qnil;
@@ -3213,6 +3247,7 @@ retry_fork(int *status, int *ep, int chfunc_is_async_signal_safe)
 {
     rb_pid_t pid;
     int state = 0;
+    int try_gc = 1;
 
 #define prefork() (		\
 	rb_io_flush(rb_stdout), \
@@ -3232,6 +3267,12 @@ retry_fork(int *status, int *ep, int chfunc_is_async_signal_safe)
             return pid;
         /* fork failed */
 	switch (errno) {
+	  case ENOMEM:
+	    if (try_gc-- > 0 && !rb_during_gc()) {
+		rb_gc();
+		continue;
+	    }
+	    break;
 	  case EAGAIN:
 #if defined(EWOULDBLOCK) && EWOULDBLOCK != EAGAIN
 	  case EWOULDBLOCK:
@@ -3245,14 +3286,13 @@ retry_fork(int *status, int *ep, int chfunc_is_async_signal_safe)
 		if (status) *status = state;
 		if (!state) continue;
 	    }
-            /* fall through */
-	  default:
-	    if (ep) {
-		preserving_errno((close(ep[0]), close(ep[1])));
-	    }
-	    if (state && !status) rb_jump_tag(state);
-	    return -1;
+	    break;
 	}
+	if (ep) {
+	    preserving_errno((close(ep[0]), close(ep[1])));
+	}
+	if (state && !status) rb_jump_tag(state);
+	return -1;
     }
 }
 
@@ -3342,10 +3382,6 @@ rb_fork_internal(int *status, int (*chfunc)(void*, char *, size_t), void *charg,
     }
     else {
 	if (pipe_nocrash(ep, fds)) return -1;
-	if (fcntl(ep[1], F_SETFD, FD_CLOEXEC)) {
-	    preserving_errno((close(ep[0]), close(ep[1])));
-	    return -1;
-	}
         pid = retry_fork(status, ep, chfunc_is_async_signal_safe);
         if (pid < 0)
             return pid;
@@ -3837,7 +3873,7 @@ rb_f_system(int argc, VALUE *argv)
  *      name => nil : unset the environment variable
  *    command...:
  *      commandline                 : command line string which is passed to the standard shell
- *      cmdname, arg1, ...          : command name and one or more arguments (no shell)
+ *      cmdname, arg1, ...          : command name and one or more arguments (This form does not use the shell. See below for caveats.)
  *      [cmdname, argv0], arg1, ... : command name, argv[0] and zero or more arguments (no shell)
  *    options: hash
  *      clearing environment variables:
@@ -3877,6 +3913,14 @@ rb_f_system(int argc, VALUE *argv)
  *        :close_others => true  : don't inherit
  *      current directory:
  *        :chdir => str
+ *
+ *      The 'cmdname, arg1, ...' form does not use the shell. However,
+ *      on different OSes, different things are provided as built-in
+ *      commands. An example of this is 'echo', which is a built-in
+ *      on Windows, but is a normal program on Linux and Mac OS X.
+ *      This means that `Process.spawn 'echo', '%Path%'` will display
+ *      the contents of the `%Path%` environment variable on Windows,
+ *      but `Process.spawn 'echo', '$PATH'` prints the literal '$PATH'.
  *
  *  If a hash is given as +env+, the environment is
  *  updated by +env+ before <code>exec(2)</code> in the child process.
@@ -5709,13 +5753,14 @@ rb_daemon(int nochdir, int noclose)
     before_fork();
     err = daemon(nochdir, noclose);
     after_fork();
+    rb_thread_atfork();
 #else
     int n;
 
 #define fork_daemon() \
     switch (rb_fork_ruby(NULL)) { \
       case -1: return -1; \
-      case 0:  break; \
+      case 0:  rb_thread_atfork(); break; \
       default: _exit(EXIT_SUCCESS); \
     }
 
@@ -6557,22 +6602,10 @@ p_gid_switch(VALUE obj)
 
 
 #if defined(HAVE_TIMES)
-/*
- *  call-seq:
- *     Process.times   -> aStructTms
- *
- *  Returns a <code>Tms</code> structure (see <code>Struct::Tms</code>)
- *  that contains user and system CPU times for this process,
- *  and also for children processes.
- *
- *     t = Process.times
- *     [ t.utime, t.stime, t.cutime, t.cstime ]   #=> [0.0, 0.02, 0.00, 0.00]
- */
-
-VALUE
-rb_proc_times(VALUE obj)
+static long
+get_clk_tck(void)
 {
-    const double hertz =
+    long hertz =
 #ifdef HAVE__SC_CLK_TCK
 	(double)sysconf(_SC_CLK_TCK);
 #else
@@ -6585,19 +6618,665 @@ rb_proc_times(VALUE obj)
 #endif /* HZ */
 	HZ;
 #endif
+    return hertz;
+}
+
+/*
+ *  call-seq:
+ *     Process.times   -> aProcessTms
+ *
+ *  Returns a <code>Tms</code> structure (see <code>Process::Tms</code>)
+ *  that contains user and system CPU times for this process,
+ *  and also for children processes.
+ *
+ *     t = Process.times
+ *     [ t.utime, t.stime, t.cutime, t.cstime ]   #=> [0.0, 0.02, 0.00, 0.00]
+ */
+
+VALUE
+rb_proc_times(VALUE obj)
+{
+    const double hertz = get_clk_tck();
     struct tms buf;
-    volatile VALUE utime, stime, cutime, sctime;
+    VALUE utime, stime, cutime, cstime, ret;
 
     times(&buf);
-    return rb_struct_new(rb_cProcessTms,
-			 utime = DBL2NUM(buf.tms_utime / hertz),
-			 stime = DBL2NUM(buf.tms_stime / hertz),
-			 cutime = DBL2NUM(buf.tms_cutime / hertz),
-			 sctime = DBL2NUM(buf.tms_cstime / hertz));
+    utime = DBL2NUM(buf.tms_utime / hertz);
+    stime = DBL2NUM(buf.tms_stime / hertz);
+    cutime = DBL2NUM(buf.tms_cutime / hertz);
+    cstime = DBL2NUM(buf.tms_cstime / hertz);
+    ret = rb_struct_new(rb_cProcessTms, utime, stime, cutime, cstime);
+    RB_GC_GUARD(utime);
+    RB_GC_GUARD(stime);
+    RB_GC_GUARD(cutime);
+    RB_GC_GUARD(cstime);
+    return ret;
 }
 #else
 #define rb_proc_times rb_f_notimplement
 #endif
+
+#ifdef HAVE_LONG_LONG
+typedef LONG_LONG timetick_int_t;
+#define TIMETICK_INT_MIN LLONG_MIN
+#define TIMETICK_INT_MAX LLONG_MAX
+#define TIMETICK_INT2NUM(v) LL2NUM(v)
+#else
+typedef long timetick_int_t;
+#define TIMETICK_INT_MIN LONG_MIN
+#define TIMETICK_INT_MAX LONG_MAX
+#define TIMETICK_INT2NUM(v) LONG2NUM(v)
+#endif
+
+static timetick_int_t
+gcd_timetick_int(timetick_int_t a, timetick_int_t b)
+{
+    timetick_int_t t;
+
+    if (a < b) {
+        t = a;
+        a = b;
+        b = t;
+    }
+
+    while (1) {
+        t = a % b;
+        if (t == 0)
+            return b;
+        a = b;
+        b = t;
+    }
+}
+
+static void
+reduce_fraction(timetick_int_t *np, timetick_int_t *dp)
+{
+    timetick_int_t gcd = gcd_timetick_int(*np, *dp);
+    if (gcd != 1) {
+        *np /= gcd;
+        *dp /= gcd;
+    }
+}
+
+static void
+reduce_factors(timetick_int_t *numerators, int num_numerators,
+               timetick_int_t *denominators, int num_denominators)
+{
+    int i, j;
+    for (i = 0; i < num_numerators; i++) {
+        if (numerators[i] == 1)
+            continue;
+        for (j = 0; j < num_denominators; j++) {
+            if (denominators[j] == 1)
+                continue;
+            reduce_fraction(&numerators[i], &denominators[j]);
+        }
+    }
+}
+
+struct timetick {
+    timetick_int_t giga_count;
+    int32_t count; /* 0 .. 999999999 */
+};
+
+static VALUE
+timetick2dblnum(struct timetick *ttp,
+    timetick_int_t *numerators, int num_numerators,
+    timetick_int_t *denominators, int num_denominators)
+{
+    double d;
+    int i;
+
+    reduce_factors(numerators, num_numerators,
+                   denominators, num_denominators);
+
+    d = ttp->giga_count * 1e9 + ttp->count;
+
+    for (i = 0; i < num_numerators; i++)
+        d *= numerators[i];
+    for (i = 0; i < num_denominators; i++)
+        d /= denominators[i];
+
+    return DBL2NUM(d);
+}
+
+static VALUE
+timetick2dblnum_reciprocal(struct timetick *ttp,
+    timetick_int_t *numerators, int num_numerators,
+    timetick_int_t *denominators, int num_denominators)
+{
+    double d;
+    int i;
+
+    reduce_factors(numerators, num_numerators,
+                   denominators, num_denominators);
+
+    d = 1.0;
+    for (i = 0; i < num_denominators; i++)
+        d *= denominators[i];
+    for (i = 0; i < num_numerators; i++)
+        d /= numerators[i];
+    d /= ttp->giga_count * 1e9 + ttp->count;
+
+    return DBL2NUM(d);
+}
+
+#define NDIV(x,y) (-(-((x)+1)/(y))-1)
+#define DIV(n,d) ((n)<0 ? NDIV((n),(d)) : (n)/(d))
+
+static VALUE
+timetick2integer(struct timetick *ttp,
+        timetick_int_t *numerators, int num_numerators,
+        timetick_int_t *denominators, int num_denominators)
+{
+    VALUE v;
+    int i;
+
+    reduce_factors(numerators, num_numerators,
+                   denominators, num_denominators);
+
+    if (!MUL_OVERFLOW_SIGNED_INTEGER_P(1000000000, ttp->giga_count,
+                TIMETICK_INT_MIN, TIMETICK_INT_MAX-ttp->count)) {
+        timetick_int_t t = ttp->giga_count * 1000000000 + ttp->count;
+        for (i = 0; i < num_numerators; i++) {
+            timetick_int_t factor = numerators[i];
+            if (MUL_OVERFLOW_SIGNED_INTEGER_P(factor, t,
+                        TIMETICK_INT_MIN, TIMETICK_INT_MAX))
+                goto generic;
+            t *= factor;
+        }
+        for (i = 0; i < num_denominators; i++) {
+            t = DIV(t, denominators[i]);
+        }
+        return TIMETICK_INT2NUM(t);
+    }
+
+  generic:
+    v = TIMETICK_INT2NUM(ttp->giga_count);
+    v = rb_funcall(v, '*', 1, LONG2FIX(1000000000));
+    v = rb_funcall(v, '+', 1, LONG2FIX(ttp->count));
+    for (i = 0; i < num_numerators; i++) {
+        timetick_int_t factor = numerators[i];
+        if (factor == 1)
+            continue;
+        v = rb_funcall(v, '*', 1, TIMETICK_INT2NUM(factor));
+    }
+    for (i = 0; i < num_denominators; i++) {
+        v = rb_funcall(v, '/', 1, TIMETICK_INT2NUM(denominators[i])); /* Ruby's '/' is div. */
+    }
+    return v;
+}
+
+static VALUE
+make_clock_result(struct timetick *ttp,
+        timetick_int_t *numerators, int num_numerators,
+        timetick_int_t *denominators, int num_denominators,
+        VALUE unit)
+{
+    if (unit == ID2SYM(rb_intern("nanosecond"))) {
+        numerators[num_numerators++] = 1000000000;
+        return timetick2integer(ttp, numerators, num_numerators, denominators, num_denominators);
+    }
+    else if (unit == ID2SYM(rb_intern("microsecond"))) {
+        numerators[num_numerators++] = 1000000;
+        return timetick2integer(ttp, numerators, num_numerators, denominators, num_denominators);
+    }
+    else if (unit == ID2SYM(rb_intern("millisecond"))) {
+        numerators[num_numerators++] = 1000;
+        return timetick2integer(ttp, numerators, num_numerators, denominators, num_denominators);
+    }
+    else if (unit == ID2SYM(rb_intern("float_microsecond"))) {
+        numerators[num_numerators++] = 1000000;
+        return timetick2dblnum(ttp, numerators, num_numerators, denominators, num_denominators);
+    }
+    else if (unit == ID2SYM(rb_intern("float_millisecond"))) {
+        numerators[num_numerators++] = 1000;
+        return timetick2dblnum(ttp, numerators, num_numerators, denominators, num_denominators);
+    }
+    else if (NIL_P(unit) || unit == ID2SYM(rb_intern("float_second"))) {
+        return timetick2dblnum(ttp, numerators, num_numerators, denominators, num_denominators);
+    }
+    else
+        rb_raise(rb_eArgError, "unexpected unit: %"PRIsVALUE, unit);
+}
+
+#ifdef __APPLE__
+static mach_timebase_info_data_t *
+get_mach_timebase_info(void)
+{
+    static mach_timebase_info_data_t sTimebaseInfo;
+
+    if ( sTimebaseInfo.denom == 0 ) {
+        (void) mach_timebase_info(&sTimebaseInfo);
+    }
+
+    return &sTimebaseInfo;
+}
+#endif
+
+/*
+ *  call-seq:
+ *     Process.clock_gettime(clock_id [, unit])   -> number
+ *
+ *  Returns a time returned by POSIX clock_gettime() function.
+ *
+ *    p Process.clock_gettime(Process::CLOCK_MONOTONIC)
+ *    #=> 896053.968060096
+ *
+ *  +clock_id+ specifies a kind of clock.
+ *  It is specifed as a constant which begins with <code>Process::CLOCK_</code>
+ *  such as Process::CLOCK_REALTIME and Process::CLOCK_MONOTONIC.
+ *
+ *  The supported constants depends on OS and version.
+ *  Ruby provides following types of +clock_id+ if available.
+ *
+ *  [CLOCK_REALTIME] SUSv2 to 4, Linux 2.5.63, FreeBSD 3.0, NetBSD 2.0, OpenBSD 2.1
+ *  [CLOCK_MONOTONIC] SUSv3 to 4, Linux 2.5.63, FreeBSD 3.0, NetBSD 2.0, OpenBSD 3.4
+ *  [CLOCK_PROCESS_CPUTIME_ID] SUSv3 to 4, Linux 2.5.63
+ *  [CLOCK_THREAD_CPUTIME_ID] SUSv3 to 4, Linux 2.5.63, FreeBSD 7.1
+ *  [CLOCK_VIRTUAL] FreeBSD 3.0, OpenBSD 2.1
+ *  [CLOCK_PROF] FreeBSD 3.0, OpenBSD 2.1
+ *  [CLOCK_REALTIME_FAST] FreeBSD 8.1
+ *  [CLOCK_REALTIME_PRECISE] FreeBSD 8.1
+ *  [CLOCK_REALTIME_COARSE] Linux 2.6.32
+ *  [CLOCK_REALTIME_ALARM] Linux 3.0
+ *  [CLOCK_MONOTONIC_FAST] FreeBSD 8.1
+ *  [CLOCK_MONOTONIC_PRECISE] FreeBSD 8.1
+ *  [CLOCK_MONOTONIC_COARSE] Linux 2.6.32
+ *  [CLOCK_MONOTONIC_RAW] Linux 2.6.28
+ *  [CLOCK_BOOTTIME] Linux 2.6.39
+ *  [CLOCK_BOOTTIME_ALARM] Linux 3.0
+ *  [CLOCK_UPTIME] FreeBSD 7.0
+ *  [CLOCK_UPTIME_FAST] FreeBSD 8.1
+ *  [CLOCK_UPTIME_PRECISE] FreeBSD 8.1
+ *  [CLOCK_SECOND] FreeBSD 8.1
+ *
+ *  Note that SUS stands for Single Unix Specification.
+ *  SUS contains POSIX and clock_gettime is defined in the POSIX part.
+ *  SUS defines CLOCK_REALTIME mandatory but
+ *  CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID and CLOCK_THREAD_CPUTIME_ID are optional.
+ *
+ *  Also, several symbols are accepted as +clock_id+.
+ *  There are emulations for clock_gettime().
+ *
+ *  For example, Process::CLOCK_REALTIME is defined as
+ *  +:GETTIMEOFDAY_BASED_CLOCK_REALTIME+ when clock_gettime() is not available.
+ *
+ *  Emulations for +CLOCK_REALTIME+:
+ *  [:GETTIMEOFDAY_BASED_CLOCK_REALTIME]
+ *    Use gettimeofday() defined by SUS.
+ *    (SUSv4 obsoleted it, though.)
+ *    The resolution is 1 microsecond.
+ *  [:TIME_BASED_CLOCK_REALTIME]
+ *    Use time() defined by ISO C.
+ *    The resolution is 1 second.
+ *
+ *  Emulations for +CLOCK_MONOTONIC+:
+ *  [:MACH_ABSOLUTE_TIME_BASED_CLOCK_MONOTONIC]
+ *    Use mach_absolute_time(), available on Darwin.
+ *    The resolution is CPU dependent.
+ *  [:TIMES_BASED_CLOCK_MONOTONIC]
+ *    Use the result value of times() defined by POSIX.
+ *    POSIX defines it as "times() shall return the elapsed real time, in clock ticks, since an arbitrary point in the past (for example, system start-up time)".
+ *    For example, GNU/Linux returns a value based on jiffies and it is monotonic.
+ *    However, 4.4BSD uses gettimeofday() and it is not monotonic.
+ *    (FreeBSD uses clock_gettime(CLOCK_MONOTONIC) instead, though.)
+ *    The resolution is the clock tick.
+ *    "getconf CLK_TCK" command shows the clock ticks per second.
+ *    (The clock ticks per second is defined by HZ macro in older systems.)
+ *    If it is 100 and clock_t is 32 bits integer type, the resolution is 10 millisecond and
+ *    cannot represent over 497 days.
+ *
+ *  Emulations for +CLOCK_PROCESS_CPUTIME_ID+:
+ *  [:GETRUSAGE_BASED_CLOCK_PROCESS_CPUTIME_ID]
+ *    Use getrusage() defined by SUS.
+ *    getrusage() is used with RUSAGE_SELF to obtain the time only for
+ *    the calling process (excluding the time for child processes).
+ *    The result is addition of user time (ru_utime) and system time (ru_stime).
+ *    The resolution is 1 microsecond.
+ *  [:TIMES_BASED_CLOCK_PROCESS_CPUTIME_ID]
+ *    Use times() defined by POSIX.
+ *    The result is addition of user time (tms_utime) and system time (tms_stime).
+ *    tms_cutime and tms_cstime are ignored to exclude the time for child processes.
+ *    The resolution is the clock tick.
+ *    "getconf CLK_TCK" command shows the clock ticks per second.
+ *    (The clock ticks per second is defined by HZ macro in older systems.)
+ *    If it is 100, the resolution is 10 millisecond.
+ *  [:CLOCK_BASED_CLOCK_PROCESS_CPUTIME_ID]
+ *    Use clock() defined by ISO C.
+ *    The resolution is 1/CLOCKS_PER_SEC.
+ *    CLOCKS_PER_SEC is the C-level macro defined by time.h.
+ *    SUS defines CLOCKS_PER_SEC is 1000000.
+ *    Non-Unix systems may define it a different value, though.
+ *    If CLOCKS_PER_SEC is 1000000 as SUS, the resolution is 1 microsecond.
+ *    If CLOCKS_PER_SEC is 1000000 and clock_t is 32 bits integer type, it cannot represent over 72 minutes.
+ *
+ *  If the given +clock_id+ is not supported, Errno::EINVAL is raised.
+ *
+ *  +unit+ specifies a type of the return value.
+ *
+ *  [:float_second] number of seconds as a float (default)
+ *  [:float_millisecond] number of milliseconds as a float
+ *  [:float_microsecond] number of microseconds as a float
+ *  [:millisecond] number of milliseconds as an integer
+ *  [:microsecond] number of microseconds as an integer
+ *  [:nanosecond] number of nanoseconds as an integer
+ *
+ *  The underlying function, clock_gettime(), returns a number of nanoseconds.
+ *  Float object (IEEE 754 double) is not enough to represent
+ *  the return value for CLOCK_REALTIME.
+ *  If the exact nanoseconds value is required, use +:nanoseconds+ as the +unit+.
+ *
+ *  The origin (zero) of the returned value varies.
+ *  For example, system start up time, process start up time, the Epoch, etc.
+ *
+ *  The origin in CLOCK_REALTIME is defined as the Epoch
+ *  (1970-01-01 00:00:00 UTC).
+ *  But some systems count leap seconds and others doesn't.
+ *  So the result can be interpreted differently across systems.
+ *  Time.now is recommended over CLOCK_REALTIME.
+ */
+VALUE
+rb_clock_gettime(int argc, VALUE *argv)
+{
+    VALUE clk_id, unit;
+    int ret;
+
+    struct timetick tt;
+    timetick_int_t numerators[2];
+    timetick_int_t denominators[2];
+    int num_numerators = 0;
+    int num_denominators = 0;
+
+    rb_scan_args(argc, argv, "11", &clk_id, &unit);
+
+    if (SYMBOL_P(clk_id)) {
+        /*
+         * Non-clock_gettime clocks are provided by symbol clk_id.
+         *
+         * gettimeofday is always available on platforms supported by Ruby.
+         * GETTIMEOFDAY_BASED_CLOCK_REALTIME is used for
+         * CLOCK_REALTIME if clock_gettime is not available.
+         */
+#define RUBY_GETTIMEOFDAY_BASED_CLOCK_REALTIME ID2SYM(rb_intern("GETTIMEOFDAY_BASED_CLOCK_REALTIME"))
+        if (clk_id == RUBY_GETTIMEOFDAY_BASED_CLOCK_REALTIME) {
+            struct timeval tv;
+            ret = gettimeofday(&tv, 0);
+            if (ret != 0)
+                rb_sys_fail("gettimeofday");
+            tt.giga_count = tv.tv_sec;
+            tt.count = (int32_t)tv.tv_usec * 1000;
+            denominators[num_denominators++] = 1000000000;
+            goto success;
+        }
+
+#define RUBY_TIME_BASED_CLOCK_REALTIME ID2SYM(rb_intern("TIME_BASED_CLOCK_REALTIME"))
+        if (clk_id == RUBY_TIME_BASED_CLOCK_REALTIME) {
+            time_t t;
+            t = time(NULL);
+            if (t == (time_t)-1)
+                rb_sys_fail("time");
+            tt.giga_count = t;
+            tt.count = 0;
+            denominators[num_denominators++] = 1000000000;
+            goto success;
+        }
+
+#ifdef HAVE_TIMES
+#define RUBY_TIMES_BASED_CLOCK_MONOTONIC \
+        ID2SYM(rb_intern("TIMES_BASED_CLOCK_MONOTONIC"))
+        if (clk_id == RUBY_TIMES_BASED_CLOCK_MONOTONIC) {
+            struct tms buf;
+            clock_t c;
+            unsigned_clock_t uc;
+            c = times(&buf);
+            if (c ==  (clock_t)-1)
+                rb_sys_fail("times");
+            uc = (unsigned_clock_t)c;
+            tt.count = (int32_t)(uc % 1000000000);
+            tt.giga_count = (uc / 1000000000);
+            denominators[num_denominators++] = get_clk_tck();
+            goto success;
+        }
+#endif
+
+#ifdef RUSAGE_SELF
+#define RUBY_GETRUSAGE_BASED_CLOCK_PROCESS_CPUTIME_ID \
+        ID2SYM(rb_intern("GETRUSAGE_BASED_CLOCK_PROCESS_CPUTIME_ID"))
+        if (clk_id == RUBY_GETRUSAGE_BASED_CLOCK_PROCESS_CPUTIME_ID) {
+            struct rusage usage;
+            int32_t usec;
+            ret = getrusage(RUSAGE_SELF, &usage);
+            if (ret != 0)
+                rb_sys_fail("getrusage");
+            tt.giga_count = usage.ru_utime.tv_sec + usage.ru_stime.tv_sec;
+            usec = (int32_t)(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec);
+            if (1000000 <= usec) {
+                tt.giga_count++;
+                usec -= 1000000;
+            }
+            tt.count = usec * 1000;
+            denominators[num_denominators++] = 1000000000;
+            goto success;
+        }
+#endif
+
+#ifdef HAVE_TIMES
+#define RUBY_TIMES_BASED_CLOCK_PROCESS_CPUTIME_ID \
+        ID2SYM(rb_intern("TIMES_BASED_CLOCK_PROCESS_CPUTIME_ID"))
+        if (clk_id == RUBY_TIMES_BASED_CLOCK_PROCESS_CPUTIME_ID) {
+            struct tms buf;
+            unsigned_clock_t utime, stime;
+            if (times(&buf) ==  (clock_t)-1)
+                rb_sys_fail("times");
+            utime = (unsigned_clock_t)buf.tms_utime;
+            stime = (unsigned_clock_t)buf.tms_stime;
+            tt.count = (int32_t)((utime % 1000000000) + (stime % 1000000000));
+            tt.giga_count = (utime / 1000000000) + (stime / 1000000000);
+            if (1000000000 <= tt.count) {
+                tt.count -= 1000000000;
+                tt.giga_count++;
+            }
+            denominators[num_denominators++] = get_clk_tck();
+            goto success;
+        }
+#endif
+
+#define RUBY_CLOCK_BASED_CLOCK_PROCESS_CPUTIME_ID \
+        ID2SYM(rb_intern("CLOCK_BASED_CLOCK_PROCESS_CPUTIME_ID"))
+        if (clk_id == RUBY_CLOCK_BASED_CLOCK_PROCESS_CPUTIME_ID) {
+            clock_t c;
+            unsigned_clock_t uc;
+            errno = 0;
+            c = clock();
+            if (c == (clock_t)-1)
+                rb_sys_fail("clock");
+            uc = (unsigned_clock_t)c;
+            tt.count = (int32_t)(uc % 1000000000);
+            tt.giga_count = uc / 1000000000;
+            denominators[num_denominators++] = CLOCKS_PER_SEC;
+            goto success;
+        }
+
+#ifdef __APPLE__
+#define RUBY_MACH_ABSOLUTE_TIME_BASED_CLOCK_MONOTONIC ID2SYM(rb_intern("MACH_ABSOLUTE_TIME_BASED_CLOCK_MONOTONIC"))
+        if (clk_id == RUBY_MACH_ABSOLUTE_TIME_BASED_CLOCK_MONOTONIC) {
+	    mach_timebase_info_data_t *info = get_mach_timebase_info();
+            uint64_t t = mach_absolute_time();
+            tt.count = (int32_t)(t % 1000000000);
+            tt.giga_count = t / 1000000000;
+            numerators[num_numerators++] = info->numer;
+            denominators[num_denominators++] = info->denom;
+            denominators[num_denominators++] = 1000000000;
+            goto success;
+        }
+#endif
+    }
+    else {
+#if defined(HAVE_CLOCK_GETTIME)
+        struct timespec ts;
+        clockid_t c;
+        c = NUM2CLOCKID(clk_id);
+        ret = clock_gettime(c, &ts);
+        if (ret == -1)
+            rb_sys_fail("clock_gettime");
+        tt.count = (int32_t)ts.tv_nsec;
+        tt.giga_count = ts.tv_sec;
+        denominators[num_denominators++] = 1000000000;
+        goto success;
+#endif
+    }
+    /* EINVAL emulates clock_gettime behavior when clock_id is invalid. */
+    errno = EINVAL;
+    rb_sys_fail(0);
+
+  success:
+    return make_clock_result(&tt, numerators, num_numerators, denominators, num_denominators, unit);
+}
+
+/*
+ *  call-seq:
+ *     Process.clock_getres(clock_id [, unit])   -> number
+ *
+ *  Returns the time resolution returned by POSIX clock_getres() function.
+ *
+ *  +clock_id+ specifies a kind of clock.
+ *  See the document of +Process.clock_gettime+ for details.
+ *
+ *  +clock_id+ can be a symbol as +Process.clock_gettime+.
+ *  However the result may not be accurate.
+ *  For example, +Process.clock_getres(:GETTIMEOFDAY_BASED_CLOCK_REALTIME)+
+ *  returns 1.0e-06 which means 1 microsecond, but actual resolution can be more coarse.
+ *
+ *  If the given +clock_id+ is not supported, Errno::EINVAL is raised.
+ *
+ *  +unit+ specifies a type of the return value.
+ *  +Process.clock_getres+ accepts +unit+ as +Process.clock_gettime+.
+ *  The default value, +:float_second+, is also same as
+ *  +Process.clock_gettime+.
+ *
+ *  +Process.clock_getres+ also accepts +:hertz+ as +unit+.
+ *  +:hertz+ means a the reciprocal of +:float_second+.
+ *
+ *  +:hertz+ can be used to obtain the exact value of
+ *  the clock ticks per second for times() function and
+ *  CLOCKS_PER_SEC for clock() function.
+ *
+ *  +Process.clock_getres(:TIMES_BASED_CLOCK_PROCESS_CPUTIME_ID, :hertz)+
+ *  returns the clock ticks per second.
+ *
+ *  +Process.clock_getres(:CLOCK_BASED_CLOCK_PROCESS_CPUTIME_ID, :hertz)+
+ *  returns CLOCKS_PER_SEC.
+ *
+ *    p Process.clock_getres(Process::CLOCK_MONOTONIC)
+ *    #=> 1.0e-09
+ *
+ */
+VALUE
+rb_clock_getres(int argc, VALUE *argv)
+{
+    VALUE clk_id, unit;
+
+    struct timetick tt;
+    timetick_int_t numerators[2];
+    timetick_int_t denominators[2];
+    int num_numerators = 0;
+    int num_denominators = 0;
+
+    rb_scan_args(argc, argv, "11", &clk_id, &unit);
+
+    if (SYMBOL_P(clk_id)) {
+#ifdef RUBY_GETTIMEOFDAY_BASED_CLOCK_REALTIME
+        if (clk_id == RUBY_GETTIMEOFDAY_BASED_CLOCK_REALTIME) {
+            tt.giga_count = 0;
+            tt.count = 1000;
+            denominators[num_denominators++] = 1000000000;
+            goto success;
+        }
+#endif
+
+#ifdef RUBY_TIME_BASED_CLOCK_REALTIME
+        if (clk_id == RUBY_TIME_BASED_CLOCK_REALTIME) {
+            tt.giga_count = 1;
+            tt.count = 0;
+            denominators[num_denominators++] = 1000000000;
+            goto success;
+        }
+#endif
+
+#ifdef RUBY_TIMES_BASED_CLOCK_MONOTONIC
+        if (clk_id == RUBY_TIMES_BASED_CLOCK_MONOTONIC) {
+            tt.count = 1;
+            tt.giga_count = 0;
+            denominators[num_denominators++] = get_clk_tck();
+            goto success;
+        }
+#endif
+
+#ifdef RUBY_GETRUSAGE_BASED_CLOCK_PROCESS_CPUTIME_ID
+        if (clk_id == RUBY_GETRUSAGE_BASED_CLOCK_PROCESS_CPUTIME_ID) {
+            tt.giga_count = 0;
+            tt.count = 1000;
+            denominators[num_denominators++] = 1000000000;
+            goto success;
+        }
+#endif
+
+#ifdef RUBY_TIMES_BASED_CLOCK_PROCESS_CPUTIME_ID
+        if (clk_id == RUBY_TIMES_BASED_CLOCK_PROCESS_CPUTIME_ID) {
+            tt.count = 1;
+            tt.giga_count = 0;
+            denominators[num_denominators++] = get_clk_tck();
+            goto success;
+        }
+#endif
+
+#ifdef RUBY_CLOCK_BASED_CLOCK_PROCESS_CPUTIME_ID
+        if (clk_id == RUBY_CLOCK_BASED_CLOCK_PROCESS_CPUTIME_ID) {
+            tt.count = 1;
+            tt.giga_count = 0;
+            denominators[num_denominators++] = CLOCKS_PER_SEC;
+            goto success;
+        }
+#endif
+
+#ifdef RUBY_MACH_ABSOLUTE_TIME_BASED_CLOCK_MONOTONIC
+        if (clk_id == RUBY_MACH_ABSOLUTE_TIME_BASED_CLOCK_MONOTONIC) {
+	    mach_timebase_info_data_t *info = get_mach_timebase_info();
+            tt.count = 1;
+            tt.giga_count = 0;
+            numerators[num_numerators++] = info->numer;
+            denominators[num_denominators++] = info->denom;
+            denominators[num_denominators++] = 1000000000;
+            goto success;
+        }
+#endif
+    }
+    else {
+#if defined(HAVE_CLOCK_GETRES)
+        struct timespec ts;
+        clockid_t c = NUM2CLOCKID(clk_id);
+        int ret = clock_getres(c, &ts);
+        if (ret == -1)
+            rb_sys_fail("clock_getres");
+        tt.count = (int32_t)ts.tv_nsec;
+        tt.giga_count = ts.tv_sec;
+        denominators[num_denominators++] = 1000000000;
+        goto success;
+#endif
+    }
+    /* EINVAL emulates clock_getres behavior when clock_id is invalid. */
+    errno = EINVAL;
+    rb_sys_fail(0);
+
+  success:
+    if (unit == ID2SYM(rb_intern("hertz"))) {
+        return timetick2dblnum_reciprocal(&tt, numerators, num_numerators, denominators, num_denominators);
+    }
+    else {
+        return make_clock_result(&tt, numerators, num_numerators, denominators, num_denominators, unit);
+    }
+}
 
 VALUE rb_mProcess;
 VALUE rb_mProcUID;
@@ -6613,6 +7292,8 @@ VALUE rb_mProcID_Syscall;
 void
 Init_process(void)
 {
+#undef rb_intern
+#define rb_intern(str) rb_intern_const(str)
     rb_define_virtual_variable("$?", rb_last_status_get, 0);
     rb_define_virtual_variable("$$", get_pid, 0);
     rb_define_global_function("exec", rb_f_exec, -1);
@@ -6857,8 +7538,78 @@ Init_process(void)
 
     rb_define_module_function(rb_mProcess, "times", rb_proc_times, 0);
 
+#ifdef CLOCK_REALTIME
+    rb_define_const(rb_mProcess, "CLOCK_REALTIME", CLOCKID2NUM(CLOCK_REALTIME));
+#elif defined(RUBY_GETTIMEOFDAY_BASED_CLOCK_REALTIME)
+    rb_define_const(rb_mProcess, "CLOCK_REALTIME", RUBY_GETTIMEOFDAY_BASED_CLOCK_REALTIME);
+#endif
+#ifdef CLOCK_MONOTONIC
+    rb_define_const(rb_mProcess, "CLOCK_MONOTONIC", CLOCKID2NUM(CLOCK_MONOTONIC));
+#elif defined(RUBY_MACH_ABSOLUTE_TIME_BASED_CLOCK_MONOTONIC)
+    rb_define_const(rb_mProcess, "CLOCK_MONOTONIC", RUBY_MACH_ABSOLUTE_TIME_BASED_CLOCK_MONOTONIC);
+#endif
+#ifdef CLOCK_PROCESS_CPUTIME_ID
+    rb_define_const(rb_mProcess, "CLOCK_PROCESS_CPUTIME_ID", CLOCKID2NUM(CLOCK_PROCESS_CPUTIME_ID));
+#elif defined(RUBY_GETRUSAGE_BASED_CLOCK_PROCESS_CPUTIME_ID)
+    rb_define_const(rb_mProcess, "CLOCK_PROCESS_CPUTIME_ID", RUBY_GETRUSAGE_BASED_CLOCK_PROCESS_CPUTIME_ID);
+#endif
+#ifdef CLOCK_THREAD_CPUTIME_ID
+    rb_define_const(rb_mProcess, "CLOCK_THREAD_CPUTIME_ID", CLOCKID2NUM(CLOCK_THREAD_CPUTIME_ID));
+#endif
+#ifdef CLOCK_VIRTUAL
+    rb_define_const(rb_mProcess, "CLOCK_VIRTUAL", CLOCKID2NUM(CLOCK_VIRTUAL));
+#endif
+#ifdef CLOCK_PROF
+    rb_define_const(rb_mProcess, "CLOCK_PROF", CLOCKID2NUM(CLOCK_PROF));
+#endif
+#ifdef CLOCK_REALTIME_FAST
+    rb_define_const(rb_mProcess, "CLOCK_REALTIME_FAST", CLOCKID2NUM(CLOCK_REALTIME_FAST));
+#endif
+#ifdef CLOCK_REALTIME_PRECISE
+    rb_define_const(rb_mProcess, "CLOCK_REALTIME_PRECISE", CLOCKID2NUM(CLOCK_REALTIME_PRECISE));
+#endif
+#ifdef CLOCK_REALTIME_COARSE
+    rb_define_const(rb_mProcess, "CLOCK_REALTIME_COARSE", CLOCKID2NUM(CLOCK_REALTIME_COARSE));
+#endif
+#ifdef CLOCK_REALTIME_ALARM
+    rb_define_const(rb_mProcess, "CLOCK_REALTIME_ALARM", CLOCKID2NUM(CLOCK_REALTIME_ALARM));
+#endif
+#ifdef CLOCK_MONOTONIC_FAST
+    rb_define_const(rb_mProcess, "CLOCK_MONOTONIC_FAST", CLOCKID2NUM(CLOCK_MONOTONIC_FAST));
+#endif
+#ifdef CLOCK_MONOTONIC_PRECISE
+    rb_define_const(rb_mProcess, "CLOCK_MONOTONIC_PRECISE", CLOCKID2NUM(CLOCK_MONOTONIC_PRECISE));
+#endif
+#ifdef CLOCK_MONOTONIC_RAW
+    rb_define_const(rb_mProcess, "CLOCK_MONOTONIC_RAW", CLOCKID2NUM(CLOCK_MONOTONIC_RAW));
+#endif
+#ifdef CLOCK_MONOTONIC_COARSE
+    rb_define_const(rb_mProcess, "CLOCK_MONOTONIC_COARSE", CLOCKID2NUM(CLOCK_MONOTONIC_COARSE));
+#endif
+#ifdef CLOCK_BOOTTIME
+    rb_define_const(rb_mProcess, "CLOCK_BOOTTIME", CLOCKID2NUM(CLOCK_BOOTTIME));
+#endif
+#ifdef CLOCK_BOOTTIME_ALARM
+    rb_define_const(rb_mProcess, "CLOCK_BOOTTIME_ALARM", CLOCKID2NUM(CLOCK_BOOTTIME_ALARM));
+#endif
+#ifdef CLOCK_UPTIME
+    rb_define_const(rb_mProcess, "CLOCK_UPTIME", CLOCKID2NUM(CLOCK_UPTIME));
+#endif
+#ifdef CLOCK_UPTIME_FAST
+    rb_define_const(rb_mProcess, "CLOCK_UPTIME_FAST", CLOCKID2NUM(CLOCK_UPTIME_FAST));
+#endif
+#ifdef CLOCK_UPTIME_PRECISE
+    rb_define_const(rb_mProcess, "CLOCK_UPTIME_PRECISE", CLOCKID2NUM(CLOCK_UPTIME_PRECISE));
+#endif
+#ifdef CLOCK_SECOND
+    rb_define_const(rb_mProcess, "CLOCK_SECOND", CLOCKID2NUM(CLOCK_SECOND));
+#endif
+    rb_define_module_function(rb_mProcess, "clock_gettime", rb_clock_gettime, -1);
+    rb_define_module_function(rb_mProcess, "clock_getres", rb_clock_getres, -1);
+
 #if defined(HAVE_TIMES) || defined(_WIN32)
-    rb_cProcessTms = rb_struct_define("Tms", "utime", "stime", "cutime", "cstime", NULL);
+    rb_cProcessTms = rb_struct_define_under(rb_mProcess, "Tms", "utime", "stime", "cutime", "cstime", NULL);
+    rb_define_const(rb_cStruct, "Tms", rb_cProcessTms); /* for the backward compatibility */
 #endif
 
     SAVED_USER_ID = geteuid();

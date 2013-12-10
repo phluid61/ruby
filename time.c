@@ -320,6 +320,11 @@ v2w_bignum(VALUE v)
 static inline wideval_t
 v2w(VALUE v)
 {
+    if (RB_TYPE_P(v, T_RATIONAL)) {
+        if (RRATIONAL(v)->den != LONG2FIX(1))
+            return v;
+        v = RRATIONAL(v)->num;
+    }
 #if WIDEVALUE_IS_WIDER
     if (FIXNUM_P(v)) {
         return WIDEVAL_WRAP((WIDEVALUE)(SIGNED_WIDEVALUE)(long)v);
@@ -754,7 +759,8 @@ static VALUE time_utc_offset _((VALUE));
 static int obj2int(VALUE obj);
 static VALUE obj2vint(VALUE obj);
 static int month_arg(VALUE arg);
-static void validate_utc_offset(VALUE utc_offset);
+static VALUE validate_utc_offset(VALUE utc_offset);
+static VALUE validate_zone_name(VALUE zone_name);
 static void validate_vtm(struct vtm *vtm);
 static int obj2subsecx(VALUE obj, VALUE *subsecx);
 
@@ -1795,6 +1801,7 @@ time_memsize(const void *tobj)
 static const rb_data_type_t time_data_type = {
     "time",
     {time_mark, time_free, time_memsize,},
+    NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 static VALUE
@@ -1817,7 +1824,7 @@ get_timeval(VALUE obj)
     struct time_object *tobj;
     TypedData_Get_Struct(obj, struct time_object, &time_data_type, tobj);
     if (!TIME_INIT_P(tobj)) {
-	rb_raise(rb_eTypeError, "uninitialized %"PRIsVALUE, CLASS_OF(obj));
+	rb_raise(rb_eTypeError, "uninitialized %"PRIsVALUE, rb_obj_class(obj));
     }
     return tobj;
 }
@@ -1828,7 +1835,7 @@ get_new_timeval(VALUE obj)
     struct time_object *tobj;
     TypedData_Get_Struct(obj, struct time_object, &time_data_type, tobj);
     if (TIME_INIT_P(tobj)) {
-	rb_raise(rb_eTypeError, "already initialized %"PRIsVALUE, CLASS_OF(obj));
+	rb_raise(rb_eTypeError, "already initialized %"PRIsVALUE, rb_obj_class(obj));
     }
     return tobj;
 }
@@ -2217,24 +2224,25 @@ time_init(int argc, VALUE *argv, VALUE time)
 static void
 time_overflow_p(time_t *secp, long *nsecp)
 {
-    time_t tmp, sec = *secp;
+    time_t sec = *secp;
     long nsec = *nsecp;
+    long sec2;
 
     if (nsec >= 1000000000) {	/* nsec positive overflow */
-	tmp = sec + nsec / 1000000000;
-	nsec %= 1000000000;
-	if (sec > 0 && tmp < 0) {
+        sec2 = nsec / 1000000000;
+	if (TIMET_MAX - sec2 < sec) {
 	    rb_raise(rb_eRangeError, "out of Time range");
 	}
-	sec = tmp;
+	nsec -= sec2 * 1000000000;
+	sec += sec2;
     }
-    if (nsec < 0) {		/* nsec negative overflow */
-	tmp = sec + NDIV(nsec,1000000000); /* negative div */
-	nsec = NMOD(nsec,1000000000);      /* negative mod */
-	if (sec < 0 && tmp > 0) {
+    else if (nsec < 0) {		/* nsec negative overflow */
+	sec2 = NDIV(nsec,1000000000); /* negative div */
+	if (sec < TIMET_MIN - sec2) {
 	    rb_raise(rb_eRangeError, "out of Time range");
 	}
-	sec = tmp;
+	nsec -= sec2 * 1000000000;
+	sec += sec2;
     }
 #ifndef NEGATIVE_TIME_T
     if (sec < 0)
@@ -2280,9 +2288,9 @@ rb_time_new(time_t sec, long usec)
 	usec -= sec2 * 1000000;
 	sec += sec2;
     }
-    else if (usec <= 1000000) {
-	long sec2 = usec / 1000000;
-	if (sec < -TIMET_MAX - sec2) {
+    else if (usec < 0) {
+	long sec2 = NDIV(usec,1000000); /* negative div */
+	if (sec < TIMET_MIN - sec2) {
 	    rb_raise(rb_eRangeError, "out of Time range");
 	}
 	usec -= sec2 * 1000000;
@@ -2580,11 +2588,19 @@ month_arg(VALUE arg)
     return mon;
 }
 
-static void
+static VALUE
 validate_utc_offset(VALUE utc_offset)
 {
     if (le(utc_offset, INT2FIX(-86400)) || ge(utc_offset, INT2FIX(86400)))
 	rb_raise(rb_eArgError, "utc_offset out of range");
+    return utc_offset;
+}
+
+static VALUE
+validate_zone_name(VALUE zone_name)
+{
+    StringValueCStr(zone_name);
+    return zone_name;
 }
 
 static void
@@ -4389,14 +4405,14 @@ strftimev(const char *fmt, VALUE time, rb_encoding *enc)
  *      %L - Millisecond of the second (000..999)
  *           The digits under millisecond are truncated to not produce 1000.
  *      %N - Fractional seconds digits, default is 9 digits (nanosecond)
- *              %3N  milli second (3 digits)
- *              %6N  micro second (6 digits)
- *              %9N  nano second (9 digits)
- *              %12N pico second (12 digits)
- *              %15N femto second (15 digits)
- *              %18N atto second (18 digits)
- *              %21N zepto second (21 digits)
- *              %24N yocto second (24 digits)
+ *              %3N  millisecond (3 digits)
+ *              %6N  microsecond (6 digits)
+ *              %9N  nanosecond (9 digits)
+ *              %12N picosecond (12 digits)
+ *              %15N femtosecond (15 digits)
+ *              %18N attosecond (18 digits)
+ *              %21N zeptosecond (21 digits)
+ *              %24N yoctosecond (24 digits)
  *           The digits under the specified length are truncated to avoid
  *           carry up.
  *
@@ -4701,8 +4717,9 @@ time_mload(VALUE time, VALUE str)
     get_attr(nano_num, {});
     get_attr(nano_den, {});
     get_attr(submicro, {});
-    get_attr(offset, validate_utc_offset(offset));
-    get_attr(zone, {});
+    get_attr(offset, (offset = rb_rescue(validate_utc_offset, offset, NULL, Qnil)));
+    get_attr(zone, (zone = rb_rescue(validate_zone_name, zone, NULL, Qnil)));
+
 #undef get_attr
 
     rb_copy_generic_ivar(time, str);
@@ -4788,7 +4805,7 @@ end_submicro: ;
 	time_fixoff(time);
     }
     if (!NIL_P(zone)) {
-	tobj->vtm.zone = StringValueCStr(zone);
+	tobj->vtm.zone = RSTRING_PTR(zone);
     }
 
     return time;
@@ -4839,7 +4856,7 @@ time_load(VALUE klass, VALUE str)
  *    Time.new(2002)         #=> 2002-01-01 00:00:00 -0500
  *    Time.new(2002, 10)     #=> 2002-10-01 00:00:00 -0500
  *    Time.new(2002, 10, 31) #=> 2002-10-31 00:00:00 -0500
- *    Time.new(2002, 10, 31, 2, 2, 2, "+02:00") #=> 2002-10-31 02:02:02 -0200
+ *    Time.new(2002, 10, 31, 2, 2, 2, "+02:00") #=> 2002-10-31 02:02:02 +0200
  *
  *  You can also use #gm, #local and
  *  #utc to infer GMT, local and UTC timezones instead of using

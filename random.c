@@ -335,6 +335,7 @@ static const rb_data_type_t random_data_type = {
 	random_free,
 	random_memsize,
     },
+    NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 static rb_random_t *
@@ -376,18 +377,12 @@ rand_init(struct MT *mt, VALUE vseed)
     seed = rb_to_int(vseed);
 
     len = rb_absint_numwords(seed, 32, NULL);
-    if (MT_MAX_STATE < len)
-        len = MT_MAX_STATE;
     if (len > numberof(buf0))
         buf = ALLOC_N(unsigned int, len);
     sign = rb_integer_pack(seed, buf, len, sizeof(uint32_t), 0,
         INTEGER_PACK_LSWORD_FIRST|INTEGER_PACK_NATIVE_BYTE_ORDER);
     if (sign < 0)
         sign = -sign;
-    if (sign != 2) { /* not overflow */
-        while (0 < len && buf[len-1] == 0)
-            len--;
-    }
     if (len == 0) {
         buf[0] = 0;
         len = 1;
@@ -495,10 +490,10 @@ make_seed_value(const uint32_t *ptr)
 {
     VALUE seed;
     size_t len;
+    uint32_t buf[DEFAULT_SEED_CNT+1];
 
     if (ptr[DEFAULT_SEED_CNT-1] <= 1) {
         /* set leading-zero-guard */
-        uint32_t buf[DEFAULT_SEED_CNT+1];
         MEMCPY(buf, ptr, uint32_t, DEFAULT_SEED_CNT);
         buf[DEFAULT_SEED_CNT] = 1;
         ptr = buf;
@@ -627,12 +622,12 @@ random_load(VALUE obj, VALUE dump)
     rb_random_t *rnd = get_rnd(obj);
     struct MT *mt = &rnd->mt;
     VALUE state, left = INT2FIX(1), seed = INT2FIX(0);
-    VALUE *ary;
+    const VALUE *ary;
     unsigned long x;
 
     rb_check_copyable(obj, dump);
     Check_Type(dump, T_ARRAY);
-    ary = RARRAY_PTR(dump);
+    ary = RARRAY_CONST_PTR(dump);
     switch (RARRAY_LEN(dump)) {
       case 3:
 	seed = ary[2];
@@ -851,7 +846,7 @@ rb_random_ulong_limited(VALUE obj, unsigned long limit)
     if (!rnd) {
 	extern int rb_num_negative_p(VALUE);
 	VALUE lim = ulong_to_num_plus_1(limit);
-	VALUE v = rb_funcall2(obj, id_rand, 1, &lim);
+	VALUE v = rb_to_int(rb_funcall2(obj, id_rand, 1, &lim));
 	unsigned long r = NUM2ULONG(v);
 	if (rb_num_negative_p(v)) {
 	    rb_raise(rb_eRangeError, "random number too small %ld", r);

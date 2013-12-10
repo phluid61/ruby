@@ -28,7 +28,7 @@ VALUE rb_cMethod;
 VALUE rb_cBinding;
 VALUE rb_cProc;
 
-static VALUE bmcall(VALUE, VALUE);
+static VALUE bmcall(VALUE, VALUE, int, VALUE *, VALUE);
 static int method_arity(VALUE);
 static int method_min_max_arity(VALUE, int *max);
 #define attached id__attached__
@@ -78,6 +78,7 @@ static const rb_data_type_t proc_data_type = {
 	proc_free,
 	proc_memsize,
     },
+    NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 VALUE
@@ -269,13 +270,14 @@ binding_memsize(const void *ptr)
     return ptr ? sizeof(rb_binding_t) : 0;
 }
 
-static const rb_data_type_t binding_data_type = {
+const rb_data_type_t ruby_binding_data_type = {
     "binding",
     {
 	binding_mark,
 	binding_free,
 	binding_memsize,
     },
+    NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 static VALUE
@@ -283,7 +285,7 @@ binding_alloc(VALUE klass)
 {
     VALUE obj;
     rb_binding_t *bind;
-    obj = TypedData_Make_Struct(klass, rb_binding_t, &binding_data_type, bind);
+    obj = TypedData_Make_Struct(klass, rb_binding_t, &ruby_binding_data_type, bind);
     return obj;
 }
 
@@ -392,6 +394,164 @@ bind_eval(int argc, VALUE *argv, VALUE bindval)
     rb_scan_args(argc, argv, "12", &args[0], &args[2], &args[3]);
     args[1] = bindval;
     return rb_f_eval(argc+1, args, Qnil /* self will be searched in eval */);
+}
+
+static VALUE *
+get_local_variable_ptr(VALUE envval, ID lid)
+{
+    const rb_env_t *env;
+
+    do {
+	const rb_iseq_t *iseq;
+	int i;
+
+	GetEnvPtr(envval, env);
+	iseq = env->block.iseq;
+
+	for (i=0; i<iseq->local_table_size; i++) {
+	    if (iseq->local_table[i] == lid) {
+		return &env->env[i];
+	    }
+	}
+    } while ((envval = env->prev_envval) != 0);
+
+    return 0;
+}
+
+/*
+ * check local variable name.
+ * returns ID if it's an already interned symbol, or 0 with setting
+ * local name in String to *namep.
+ */
+static ID
+check_local_id(VALUE bindval, volatile VALUE *pname)
+{
+    ID lid = rb_check_id(pname);
+    VALUE name = *pname, sym = name;
+
+    if (lid) {
+	if (!rb_is_local_id(lid)) {
+	    name = rb_id2str(lid);
+	  wrong:
+	    rb_name_error_str(sym, "wrong local variable name `% "PRIsVALUE"' for %"PRIsVALUE,
+			      name, bindval);
+	}
+    }
+    else {
+	if (!rb_is_local_name(sym)) goto wrong;
+	return 0;
+    }
+    return lid;
+}
+
+/*
+ *  call-seq:
+ *     binding.local_variable_get(symbol) -> obj
+ *
+ *  Returns a +value+ of local variable +symbol+.
+ *
+ *	def foo
+ *  	  a = 1
+ *  	  binding.local_variable_get(:a) #=> 1
+ *  	  binding.local_variable_get(:b) #=> NameError
+ *  	end
+ *
+ *  This method is short version of the following code.
+ *
+ *	binding.eval("#{symbol}")
+ *
+ */
+static VALUE
+bind_local_variable_get(VALUE bindval, VALUE sym)
+{
+    ID lid = check_local_id(bindval, &sym);
+    const rb_binding_t *bind;
+    const VALUE *ptr;
+
+    if (!lid) goto undefined;
+
+    GetBindingPtr(bindval, bind);
+
+    if ((ptr = get_local_variable_ptr(bind->env, lid)) == NULL) {
+      undefined:
+	rb_name_error_str(sym, "local variable `%"PRIsVALUE"' not defined for %"PRIsVALUE,
+			  sym, bindval);
+    }
+
+    return *ptr;
+}
+
+/*
+ *  call-seq:
+ *     binding.local_variable_set(symbol, obj) -> obj
+ *
+ *  Set local variable named +symbol+ as +obj+.
+ *
+ *	def foo
+ *  	  a = 1
+ *  	  b = binding
+ *  	  b.local_variable_set(:a, 2) # set existing local variable `a'
+ *  	  b.local_variable_set(:b, 3) # create new local variable `b'
+ *  	                              # `b' exists only in binding.
+ *  	  b.local_variable_get(:a) #=> 2
+ *  	  b.local_variable_get(:b) #=> 3
+ *  	  p a #=> 2
+ *  	  p b #=> NameError
+ *  	end
+ *
+ *  This method is a similar behavior of the following code
+ *
+ *    binding.eval("#{symbol} = #{obj}")
+ *
+ *  if obj can be dumped in Ruby code.
+ */
+static VALUE
+bind_local_variable_set(VALUE bindval, VALUE sym, VALUE val)
+{
+    ID lid = check_local_id(bindval, &sym);
+    rb_binding_t *bind;
+    VALUE *ptr;
+
+    if (!lid) lid = rb_intern_str(sym);
+
+    GetBindingPtr(bindval, bind);
+    if ((ptr = get_local_variable_ptr(bind->env, lid)) == NULL) {
+	/* not found. create new env */
+	ptr = rb_binding_add_dynavars(bind, 1, &lid);
+    }
+
+    *ptr = val;
+
+    return val;
+}
+
+/*
+ *  call-seq:
+ *     binding.local_variable_defined?(symbol) -> obj
+ *
+ *  Returns a +true+ if a local variable +symbol+ exists.
+ *
+ *	def foo
+ *  	  a = 1
+ *  	  binding.local_variable_defined?(:a) #=> true
+ *  	  binding.local_variable_defined?(:b) #=> false
+ *  	end
+ *
+ *  This method is short version of the following code.
+ *
+ *	binding.eval("defined?(#{symbol}) == 'local-variable'")
+ *
+ */
+static VALUE
+bind_local_variable_defined_p(VALUE bindval, VALUE sym)
+{
+    ID lid = check_local_id(bindval, &sym);
+    const rb_binding_t *bind;
+
+    if (!lid) return Qfalse;
+
+    GetBindingPtr(bindval, bind);
+    return get_local_variable_ptr(bind->env, lid) ? Qtrue : Qfalse;
 }
 
 static VALUE
@@ -594,15 +754,14 @@ rb_proc_call(VALUE self, VALUE args)
     VALUE vret;
     rb_proc_t *proc;
     GetProcPtr(self, proc);
-    vret = rb_vm_invoke_proc(GET_THREAD(), proc,
-			     check_argc(RARRAY_LEN(args)), RARRAY_PTR(args), 0);
+    vret = rb_vm_invoke_proc(GET_THREAD(), proc, check_argc(RARRAY_LEN(args)), RARRAY_CONST_PTR(args), 0);
     RB_GC_GUARD(self);
     RB_GC_GUARD(args);
     return vret;
 }
 
 VALUE
-rb_proc_call_with_block(VALUE self, int argc, VALUE *argv, VALUE pass_procval)
+rb_proc_call_with_block(VALUE self, int argc, const VALUE *argv, VALUE pass_procval)
 {
     VALUE vret;
     rb_proc_t *proc;
@@ -620,6 +779,7 @@ rb_proc_call_with_block(VALUE self, int argc, VALUE *argv, VALUE pass_procval)
     RB_GC_GUARD(pass_procval);
     return vret;
 }
+
 
 /*
  *  call-seq:
@@ -669,19 +829,10 @@ rb_iseq_min_max_arity(const rb_iseq_t *iseq, int *max)
     return iseq->argc + iseq->arg_post_len;
 }
 
-/*
- * Returns the number of required parameters and stores the maximum
- * number of parameters in max, or UNLIMITED_ARGUMENTS if no max.
- * For non-lambda procs, the maximum is the number of non-ignored
- * parameters even though there is no actual limit to the number of parameters
- */
 static int
-rb_proc_min_max_arity(VALUE self, int *max)
+rb_block_min_max_arity(rb_block_t *block, int *max)
 {
-    rb_proc_t *proc;
-    rb_iseq_t *iseq;
-    GetProcPtr(self, proc);
-    iseq = proc->block.iseq;
+    rb_iseq_t *iseq = block->iseq;
     if (iseq) {
 	if (BUILTIN_TYPE(iseq) != T_NODE) {
 	    return rb_iseq_min_max_arity(iseq, max);
@@ -698,6 +849,22 @@ rb_proc_min_max_arity(VALUE self, int *max)
     return 0;
 }
 
+/*
+ * Returns the number of required parameters and stores the maximum
+ * number of parameters in max, or UNLIMITED_ARGUMENTS if no max.
+ * For non-lambda procs, the maximum is the number of non-ignored
+ * parameters even though there is no actual limit to the number of parameters
+ */
+static int
+rb_proc_min_max_arity(VALUE self, int *max)
+{
+    rb_proc_t *proc;
+    rb_block_t *block;
+    GetProcPtr(self, proc);
+    block = &proc->block;
+    return rb_block_min_max_arity(block, max);
+}
+
 int
 rb_proc_arity(VALUE self)
 {
@@ -705,6 +872,27 @@ rb_proc_arity(VALUE self)
     int max, min = rb_proc_min_max_arity(self, &max);
     GetProcPtr(self, proc);
     return (proc->is_lambda ? min == max : max != UNLIMITED_ARGUMENTS) ? min : -min-1;
+}
+
+int
+rb_block_arity(void)
+{
+    int min, max;
+    rb_thread_t *th = GET_THREAD();
+    rb_control_frame_t *cfp = th->cfp;
+    rb_block_t *block = rb_vm_control_frame_block_ptr(cfp);
+    VALUE proc_value;
+
+    if (!block) rb_raise(rb_eArgError, "no block given");
+    min = rb_block_min_max_arity(block, &max);
+    proc_value = block->proc;
+    if (proc_value) {
+	rb_proc_t *proc;
+	GetProcPtr(proc_value, proc);
+	if (proc)
+	    return (proc->is_lambda ? min == max : max != UNLIMITED_ARGUMENTS) ? min : -min-1;
+    }
+    return max != UNLIMITED_ARGUMENTS ? min : -min-1;
 }
 
 #define get_proc_iseq rb_proc_get_iseq
@@ -738,7 +926,7 @@ iseq_location(rb_iseq_t *iseq)
     if (!iseq) return Qnil;
     loc[0] = iseq->location.path;
     if (iseq->line_info_table) {
-	loc[1] = INT2FIX(rb_iseq_first_lineno(iseq));
+	loc[1] = rb_iseq_first_lineno(iseq->self);
     }
     else {
 	loc[1] = Qnil;
@@ -852,11 +1040,10 @@ proc_to_s(VALUE self)
 	int first_lineno = 0;
 
 	if (iseq->line_info_table) {
-	    first_lineno = rb_iseq_first_lineno(iseq);
+	    first_lineno = FIX2INT(rb_iseq_first_lineno(iseq->self));
 	}
-	str = rb_sprintf("#<%s:%p@%s:%d%s>", cname, (void *)self,
-			 RSTRING_PTR(iseq->location.path),
-			 first_lineno, is_lambda);
+	str = rb_sprintf("#<%s:%p@%"PRIsVALUE":%d%s>", cname, (void *)self,
+			 iseq->location.path, first_lineno, is_lambda);
     }
     else {
 	str = rb_sprintf("#<%s:%p%s>", cname, (void *)proc->block.iseq,
@@ -919,6 +1106,7 @@ static const rb_data_type_t method_data_type = {
 	bm_free,
 	bm_memsize,
     },
+    NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 VALUE
@@ -940,7 +1128,6 @@ mnew_from_me(rb_method_entry_t *me, VALUE defined_class, VALUE klass,
     VALUE rclass = klass;
     ID rid = id;
     struct METHOD *data;
-    rb_method_entry_t meb;
     rb_method_definition_t *def = 0;
     rb_method_flag_t flag = NOEX_UNDEF;
 
@@ -951,18 +1138,7 @@ mnew_from_me(rb_method_entry_t *me, VALUE defined_class, VALUE klass,
 
 	if (obj != Qundef && !rb_method_basic_definition_p(klass, rmiss)) {
 	    if (RTEST(rb_funcall(obj, rmiss, 2, sym, scope ? Qfalse : Qtrue))) {
-		def = ALLOC(rb_method_definition_t);
-		def->type = VM_METHOD_TYPE_MISSING;
-		def->original_id = id;
-		def->alias_count = 0;
-
-		meb.flag = 0;
-		meb.mark = 0;
-		meb.called_id = id;
-		meb.klass = klass;
-		meb.def = def;
-		me = &meb;
-		def = 0;
+		me = 0;
 
 		goto gen_method;
 	    }
@@ -978,10 +1154,10 @@ mnew_from_me(rb_method_entry_t *me, VALUE defined_class, VALUE klass,
 		case NOEX_PRIVATE: v = "private"; break;
 		case NOEX_PROTECTED: v = "protected"; break;
 	    }
-	    rb_name_error(id, "method `%s' for %s `%s' is %s",
+	    rb_name_error(id, "method `%s' for %s `% "PRIsVALUE"' is %s",
 			  rb_id2name(id),
 			  (RB_TYPE_P(klass, T_MODULE)) ? "module" : "class",
-			  rb_class2name(klass),
+			  rb_class_name(klass),
 			  v);
 	}
     }
@@ -1011,9 +1187,27 @@ mnew_from_me(rb_method_entry_t *me, VALUE defined_class, VALUE klass,
     data->defined_class = defined_class;
     data->id = rid;
     data->me = ALLOC(rb_method_entry_t);
-    *data->me = *me;
-    data->me->def->alias_count++;
+    if (me) {
+	*data->me = *me;
+    }
+    else {
+	me = data->me;
+	me->flag = 0;
+	me->mark = 0;
+	me->called_id = id;
+	me->klass = klass;
+	me->def = 0;
+
+	def = ALLOC(rb_method_definition_t);
+	me->def = def;
+
+	def->type = VM_METHOD_TYPE_MISSING;
+	def->original_id = id;
+	def->alias_count = 0;
+
+    }
     data->ume = ALLOC(struct unlinked_method_entry_list_entry);
+    data->me->def->alias_count++;
 
     OBJ_INFECT(method, klass);
 
@@ -1384,8 +1578,8 @@ rb_mod_public_instance_method(VALUE mod, VALUE vid)
 
 /*
  *  call-seq:
- *     define_method(symbol, method)     -> new_method
- *     define_method(symbol) { block }   -> proc
+ *     define_method(symbol, method)     -> symbol
+ *     define_method(symbol) { block }   -> symbol
  *
  *  Defines an instance method in the receiver. The _method_
  *  parameter can be a +Proc+, a +Method+ or an +UnboundMethod+ object.
@@ -1452,8 +1646,8 @@ rb_mod_define_method(int argc, VALUE *argv, VALUE mod)
 	    }
 	    else {
 		rb_raise(rb_eTypeError,
-			 "bind argument must be a subclass of %s",
-			 rb_class2name(rclass));
+			 "bind argument must be a subclass of % "PRIsVALUE,
+			 rb_class_name(rclass));
 	    }
 	}
 	rb_method_entry_set(mod, id, method->me, noex);
@@ -1467,7 +1661,7 @@ rb_mod_define_method(int argc, VALUE *argv, VALUE mod)
 	GetProcPtr(body, proc);
 	if (BUILTIN_TYPE(proc->block.iseq) != T_NODE) {
 	    proc->block.iseq->defined_method_id = id;
-	    proc->block.iseq->klass = mod;
+	    OBJ_WRITE(proc->block.iseq->self, &proc->block.iseq->klass, mod);
 	    proc->is_lambda = TRUE;
 	    proc->is_from_method = TRUE;
 	    proc->block.klass = mod;
@@ -1482,7 +1676,7 @@ rb_mod_define_method(int argc, VALUE *argv, VALUE mod)
 	rb_raise(rb_eTypeError, "wrong argument type (expected Proc/Method)");
     }
 
-    return body;
+    return ID2SYM(id);
 }
 
 /*
@@ -1593,6 +1787,13 @@ method_clone(VALUE self)
 VALUE
 rb_method_call(int argc, VALUE *argv, VALUE method)
 {
+    VALUE proc = rb_block_given_p() ? rb_block_proc() : Qnil;
+    return rb_method_call_with_block(argc, argv, method, proc);
+}
+
+VALUE
+rb_method_call_with_block(int argc, VALUE *argv, VALUE method, VALUE pass_procval)
+{
     VALUE result = Qnil;	/* OK */
     struct METHOD *data;
     int state;
@@ -1612,8 +1813,15 @@ rb_method_call(int argc, VALUE *argv, VALUE method)
     }
     if ((state = EXEC_TAG()) == 0) {
 	rb_thread_t *th = GET_THREAD();
+	rb_block_t *block = 0;
 
-	PASS_PASSED_BLOCK_TH(th);
+	if (!NIL_P(pass_procval)) {
+	    rb_proc_t *pass_proc;
+	    GetProcPtr(pass_procval, pass_proc);
+	    block = &pass_proc->block;
+	}
+
+	th->passed_block = block;
 	result = rb_vm_call(th, data->recv, data->id,  argc, argv, data->me, data->defined_class);
     }
     POP_TAG();
@@ -1719,18 +1927,20 @@ static VALUE
 umethod_bind(VALUE method, VALUE recv)
 {
     struct METHOD *data, *bound;
+    VALUE methclass;
 
     TypedData_Get_Struct(method, struct METHOD, &method_data_type, data);
 
-    if (!RB_TYPE_P(data->rclass, T_MODULE) &&
-	data->rclass != CLASS_OF(recv) && !rb_obj_is_kind_of(recv, data->rclass)) {
-	if (FL_TEST(data->rclass, FL_SINGLETON)) {
+    methclass = data->rclass;
+    if (!RB_TYPE_P(methclass, T_MODULE) &&
+	methclass != CLASS_OF(recv) && !rb_obj_is_kind_of(recv, methclass)) {
+	if (FL_TEST(methclass, FL_SINGLETON)) {
 	    rb_raise(rb_eTypeError,
 		     "singleton method called for a different object");
 	}
 	else {
-	    rb_raise(rb_eTypeError, "bind argument must be an instance of %s",
-		     rb_class2name(data->rclass));
+	    rb_raise(rb_eTypeError, "bind argument must be an instance of % "PRIsVALUE,
+		     rb_class_name(methclass));
 	}
     }
 
@@ -2028,10 +2238,10 @@ method_inspect(VALUE method)
 	}
     }
     else {
-	rb_str_buf_cat2(str, rb_class2name(data->rclass));
+	rb_str_buf_append(str, rb_class_name(data->rclass));
 	if (data->rclass != data->me->klass) {
 	    rb_str_buf_cat2(str, "(");
-	    rb_str_buf_cat2(str, rb_class2name(data->me->klass));
+	    rb_str_buf_append(str, rb_class_name(data->me->klass));
 	    rb_str_buf_cat2(str, ")");
 	}
     }
@@ -2062,11 +2272,10 @@ mlambda(VALUE method)
 }
 
 static VALUE
-bmcall(VALUE args, VALUE method)
+bmcall(VALUE args, VALUE method, int argc, VALUE *argv, VALUE passed_proc)
 {
     volatile VALUE a;
     VALUE ret;
-    int argc;
 
     if (CLASS_OF(args) != rb_cArray) {
 	args = rb_ary_new3(1, args);
@@ -2075,7 +2284,7 @@ bmcall(VALUE args, VALUE method)
     else {
 	argc = check_argc(RARRAY_LEN(args));
     }
-    ret = rb_method_call(argc, RARRAY_PTR(args), method);
+    ret = rb_method_call_with_block(argc, RARRAY_PTR(args), method, passed_proc);
     RB_GC_GUARD(a) = args;
     return ret;
 }
@@ -2176,7 +2385,7 @@ proc_binding(VALUE self)
     bind->env = proc->envval;
     if (RUBY_VM_NORMAL_ISEQ_P(proc->block.iseq)) {
 	bind->path = proc->block.iseq->location.path;
-	bind->first_lineno = rb_iseq_first_lineno(proc->block.iseq);
+	bind->first_lineno = FIX2INT(rb_iseq_first_lineno(proc->block.iseq->self));
     }
     else {
 	bind->path = Qnil;
@@ -2223,8 +2432,7 @@ curry(VALUE dummy, VALUE args, int argc, VALUE *argv, VALUE passed_proc)
 	return arity;
     }
     else {
-	return rb_proc_call_with_block(proc, check_argc(RARRAY_LEN(passed)),
-				       RARRAY_PTR(passed), passed_proc);
+	return rb_proc_call_with_block(proc, check_argc(RARRAY_LEN(passed)), RARRAY_CONST_PTR(passed), passed_proc);
     }
 }
 
@@ -2500,6 +2708,9 @@ Init_Binding(void)
     rb_define_method(rb_cBinding, "clone", binding_clone, 0);
     rb_define_method(rb_cBinding, "dup", binding_dup, 0);
     rb_define_method(rb_cBinding, "eval", bind_eval, -1);
+    rb_define_method(rb_cBinding, "local_variable_get", bind_local_variable_get, 1);
+    rb_define_method(rb_cBinding, "local_variable_set", bind_local_variable_set, 2);
+    rb_define_method(rb_cBinding, "local_variable_defined?", bind_local_variable_defined_p, 1);
     rb_define_global_function("binding", rb_f_binding, 0);
 }
 

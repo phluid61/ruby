@@ -24,6 +24,7 @@ const union {
     enum ruby_tag_type          tag_type;
     enum node_type              node_type;
     enum ruby_method_ids        method_ids;
+    enum ruby_id_types          id_types;
     enum {
         RUBY_ENCODING_INLINE_MAX = ENCODING_INLINE_MAX,
         RUBY_ENCODING_SHIFT = ENCODING_SHIFT,
@@ -33,7 +34,7 @@ const union {
         RUBY_ENC_CODERANGE_VALID   = ENC_CODERANGE_VALID,
         RUBY_ENC_CODERANGE_BROKEN  = ENC_CODERANGE_BROKEN,
         RUBY_FL_WB_PROTECTED     = FL_WB_PROTECTED,
-        RUBY_FL_OLDGEN      = FL_OLDGEN,
+        RUBY_FL_PROMOTED    = FL_PROMOTED,
         RUBY_FL_FINALIZE    = FL_FINALIZE,
         RUBY_FL_TAINT       = FL_TAINT,
         RUBY_FL_EXIVAR      = FL_EXIVAR,

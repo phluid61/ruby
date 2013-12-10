@@ -9,7 +9,7 @@ rescue LoadError
 end
 
 # Resolv is a thread-aware DNS resolver library written in Ruby.  Resolv can
-# handle multiple DNS requests concurrently without blocking the entire ruby
+# handle multiple DNS requests concurrently without blocking the entire Ruby
 # interpreter.
 #
 # See also resolv-replace.rb to replace the libc resolver with Resolv.
@@ -166,6 +166,7 @@ class Resolv
 
   class Hosts
     begin
+      raise LoadError unless /mswin|mingw|cygwin/ =~ RUBY_PLATFORM
       require 'win32/resolv'
       DefaultFileName = Win32::Resolv.get_hosts_path
     rescue LoadError

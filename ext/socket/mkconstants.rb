@@ -453,6 +453,7 @@ MSG_RST
 MSG_ERRQUEUE	nil	Fetch message from error queue
 MSG_NOSIGNAL	nil	Do not generate SIGPIPE
 MSG_MORE	nil	Sender will send more
+MSG_FASTOPEN nil Reduce step of the handshake process
 
 SOL_SOCKET	nil	Socket-level options
 SOL_IP	nil	IP socket options
@@ -622,6 +623,7 @@ TCP_NOPUSH	nil	Don't push the last block of write
 TCP_QUICKACK	nil	Enable quickack mode
 TCP_SYNCNT	nil	Number of SYN retransmits before a connection is dropped
 TCP_WINDOW_CLAMP	nil	Clamp the size of the advertised window
+TCP_FASTOPEN nil Reduce step of the handshake process
 
 UDP_CORK	nil	Don't send partial frames
 

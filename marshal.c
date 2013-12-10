@@ -42,7 +42,7 @@ shortlen(long len, BDIGIT *ds)
 	num = SHORTDN(num);
 	offset++;
     }
-    return (len - 1)*sizeof(BDIGIT)/2 + offset;
+    return (len - 1)*SIZEOF_BDIGITS/2 + offset;
 }
 #define SHORTLEN(x) shortlen((x),d)
 #endif
@@ -186,6 +186,7 @@ memsize_dump_arg(const void *ptr)
 static const rb_data_type_t dump_arg_data = {
     "dump_arg",
     {mark_dump_arg, free_dump_arg, memsize_dump_arg,},
+    NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 static const char *
@@ -796,8 +797,7 @@ w_object(VALUE obj, struct dump_arg *arg, int limit)
 	    if (NIL_P(RHASH_IFNONE(obj))) {
 		w_byte(TYPE_HASH, arg);
 	    }
-	    else if (FL_TEST(obj, FL_USER2)) {
-		/* FL_USER2 means HASH_PROC_DEFAULT (see hash.c) */
+	    else if (FL_TEST(obj, HASH_PROC_DEFAULT)) {
 		rb_raise(rb_eTypeError, "can't dump hash with default proc");
 	    }
 	    else {
@@ -821,7 +821,7 @@ w_object(VALUE obj, struct dump_arg *arg, int limit)
 		mem = rb_struct_members(obj);
 		for (i=0; i<len; i++) {
 		    w_symbol(SYM2ID(RARRAY_AREF(mem, i)), arg);
-		    w_object(RSTRUCT_PTR(obj)[i], arg, limit);
+		    w_object(RSTRUCT_GET(obj, i), arg, limit);
 		}
 	    }
 	    break;
@@ -910,11 +910,11 @@ io_needed(void)
  *
  * Marshal can't dump following objects:
  * * anonymous Class/Module.
- * * objects which related to its system (ex: Dir, File::Stat, IO, File, Socket
+ * * objects which are related to system (ex: Dir, File::Stat, IO, File, Socket
  *   and so on)
  * * an instance of MatchData, Data, Method, UnboundMethod, Proc, Thread,
  *   ThreadGroup, Continuation
- * * objects which defines singleton methods
+ * * objects which define singleton methods
  */
 static VALUE
 marshal_dump(int argc, VALUE *argv)
@@ -1021,6 +1021,7 @@ memsize_load_arg(const void *ptr)
 static const rb_data_type_t load_arg_data = {
     "load_arg",
     {mark_load_arg, free_load_arg, memsize_load_arg,},
+    NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 #define r_entry(v, arg) r_entry0((v), (arg)->data->num_entries, (arg))
@@ -1916,8 +1917,8 @@ clear_load_arg(struct load_arg *arg)
  * Returns the result of converting the serialized data in source into a
  * Ruby object (possibly with associated subordinate objects). source
  * may be either an instance of IO or an object that responds to
- * to_str. If proc is specified, it will be passed each object as it
- * is deserialized.
+ * to_str. If proc is specified, each object will be passed to the proc, as the object
+ * is being deserialized.
  *
  * Never pass untrusted data (including user supplied input) to this method.
  * Please see the overview for further details.

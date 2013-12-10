@@ -265,8 +265,8 @@ typedef struct RNode {
 
 #define RNODE(obj)  (R_CAST(RNode)(obj))
 
-/* FL     : 0..4: T_TYPES, 5: KEEP_WB, 6: OLDGEN, 7: FINALIZE, 8: TAINT, 9: UNTRUSTERD, 10: EXIVAR, 11: FREEZE */
-/* NODE_FL: 0..4: T_TYPES, 5: KEEP_WB, 6: OLDGEN, 7: NODE_FL_NEWLINE|NODE_FL_CREF_PUSHED_BY_EVAL,
+/* FL     : 0..4: T_TYPES, 5: KEEP_WB, 6: PROMOTED, 7: FINALIZE, 8: TAINT, 9: UNTRUSTERD, 10: EXIVAR, 11: FREEZE */
+/* NODE_FL: 0..4: T_TYPES, 5: KEEP_WB, 6: PROMOTED, 7: NODE_FL_NEWLINE|NODE_FL_CREF_PUSHED_BY_EVAL,
  *          8..14: nd_type,
  *          15..: nd_line or
  *          15: NODE_FL_CREF_PUSHED_BY_EVAL
@@ -486,6 +486,8 @@ NODE *rb_parser_while_loop(VALUE, NODE *, int, int);
 NODE *rb_parser_compile_cstr(volatile VALUE, const char*, const char*, int, int);
 NODE *rb_parser_compile_string(volatile VALUE, const char*, VALUE, int);
 NODE *rb_parser_compile_file(volatile VALUE, const char*, VALUE, int);
+NODE *rb_parser_compile_string_path(volatile VALUE vparser, VALUE fname, VALUE src, int line);
+NODE *rb_parser_compile_file_path(volatile VALUE vparser, VALUE fname, VALUE input, int line);
 
 NODE *rb_compile_cstr(const char*, const char*, int, int);
 NODE *rb_compile_string(const char*, VALUE, int);

@@ -32,22 +32,19 @@ class TestBeginEndBlock < Test::Unit::TestCase
   end
 
   def test_begininmethod
-    e = assert_raise(SyntaxError) do
+    assert_raise_with_message(SyntaxError, /BEGIN is permitted only at toplevel/) do
       eval("def foo; BEGIN {}; end")
     end
-    assert_match(/BEGIN is permitted only at toplevel/, e.message)
 
-    e = assert_raise(SyntaxError) do
+    assert_raise_with_message(SyntaxError, /BEGIN is permitted only at toplevel/) do
       eval('eval("def foo; BEGIN {}; end")')
     end
-    assert_match(/BEGIN is permitted only at toplevel/, e.message)
   end
 
   def test_begininclass
-    e = assert_raise(SyntaxError) do
+    assert_raise_with_message(SyntaxError, /BEGIN is permitted only at toplevel/) do
       eval("class TestBeginEndBlock; BEGIN {}; end")
     end
-    assert_match(/BEGIN is permitted only at toplevel/, e.message)
   end
 
   def test_endblockwarn
@@ -175,5 +172,16 @@ EOW
       out, err, status = EnvUtil.invoke_ruby(cmd.map {|s|["-e", "#{ex} {#{s}}"]}.flatten, "", true, true)
       assert_equal(["", "", 42], [out, err, status.exitstatus], "#{bug5218}: #{ex}")
     end
+  end
+
+  def test_callcc_at_exit
+    bug9110 = '[ruby-core:58329][Bug #9110]'
+    script = <<EOS
+require "continuation"
+c = nil
+at_exit { c.call }
+at_exit { callcc {|_c| c = _c } }
+EOS
+    assert_normal_exit(script, bug9110)
   end
 end

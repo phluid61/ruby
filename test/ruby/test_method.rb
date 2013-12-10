@@ -262,6 +262,22 @@ class TestMethod < Test::Unit::TestCase
     end
   end
 
+  def test_define_singleton_method_with_extended_method
+    bug8686 = "[ruby-core:56174]"
+
+    m = Module.new do
+      extend self
+
+      def a
+        "a"
+      end
+    end
+
+    assert_nothing_raised do
+      m.define_singleton_method(:a, m.method(:a))
+    end
+  end
+
   def test_define_method_transplating
     feature4254 = '[ruby-core:34267]'
     m = Module.new {define_method(:meth, M.instance_method(:meth))}
@@ -544,7 +560,11 @@ class TestMethod < Test::Unit::TestCase
 
   def test___dir__
     assert_instance_of String, __dir__
-    assert_equal(File.expand_path("..", __FILE__), __dir__)
+    assert_equal(File.dirname(File.realpath(__FILE__)), __dir__)
+    bug8436 = '[ruby-core:55123] [Bug #8436]'
+    assert_equal(__dir__, eval("__dir__", binding), bug8436)
+    bug8662 = '[ruby-core:56099] [Bug #8662]'
+    assert_equal("arbitrary", eval("__dir__", binding, "arbitrary/file.rb"), bug8662)
   end
 
   def test_alias_owner
