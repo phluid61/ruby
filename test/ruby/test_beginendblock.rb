@@ -32,22 +32,19 @@ class TestBeginEndBlock < Test::Unit::TestCase
   end
 
   def test_begininmethod
-    e = assert_raise(SyntaxError) do
+    assert_raise_with_message(SyntaxError, /BEGIN is permitted only at toplevel/) do
       eval("def foo; BEGIN {}; end")
     end
-    assert_match(/BEGIN is permitted only at toplevel/, e.message)
 
-    e = assert_raise(SyntaxError) do
+    assert_raise_with_message(SyntaxError, /BEGIN is permitted only at toplevel/) do
       eval('eval("def foo; BEGIN {}; end")')
     end
-    assert_match(/BEGIN is permitted only at toplevel/, e.message)
   end
 
   def test_begininclass
-    e = assert_raise(SyntaxError) do
+    assert_raise_with_message(SyntaxError, /BEGIN is permitted only at toplevel/) do
       eval("class TestBeginEndBlock; BEGIN {}; end")
     end
-    assert_match(/BEGIN is permitted only at toplevel/, e.message)
   end
 
   def test_endblockwarn
@@ -85,18 +82,33 @@ EOW
                      '-e', 'raise %[SomethingElse]']) {|f|
       f.read
     }
+    status = $?
     assert_match(/SomethingBad/, out, "[ruby-core:9675]")
     assert_match(/SomethingElse/, out, "[ruby-core:9675]")
+    assert_not_predicate(status, :success?)
   end
 
-  def test_should_propagate_exit_code
+  def test_exitcode_in_at_exit
+    bug8501 = '[ruby-core:55365] [Bug #8501]'
+    ruby = EnvUtil.rubybin
+    out = IO.popen([ruby, '-e', 'STDERR.reopen(STDOUT)',
+                    '-e', 'o = Object.new; def o.inspect; raise "[Bug #8501]"; end',
+                    '-e', 'at_exit{o.nope}']) {|f|
+      f.read
+    }
+    status = $?
+    assert_match(/undefined method `nope'/, out, bug8501)
+    assert_not_predicate(status, :success?, bug8501)
+  end
+
+  def test_propagate_exit_code
     ruby = EnvUtil.rubybin
     assert_equal false, system(ruby, '-e', 'at_exit{exit 2}')
     assert_equal 2, $?.exitstatus
     assert_nil $?.termsig
   end
 
-  def test_should_propagate_signaled
+  def test_propagate_signaled
     ruby = EnvUtil.rubybin
     out = IO.popen(
       [ruby,
@@ -160,5 +172,16 @@ EOW
       out, err, status = EnvUtil.invoke_ruby(cmd.map {|s|["-e", "#{ex} {#{s}}"]}.flatten, "", true, true)
       assert_equal(["", "", 42], [out, err, status.exitstatus], "#{bug5218}: #{ex}")
     end
+  end
+
+  def test_callcc_at_exit
+    bug9110 = '[ruby-core:58329][Bug #9110]'
+    script = <<EOS
+require "continuation"
+c = nil
+at_exit { c.call }
+at_exit { callcc {|_c| c = _c } }
+EOS
+    assert_normal_exit(script, bug9110)
   end
 end

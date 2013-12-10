@@ -63,10 +63,6 @@ char *strchr(char*,char);
 
 #include "ruby/util.h"
 
-#if !defined HAVE_LSTAT && !defined lstat
-#define lstat stat
-#endif
-
 /* define system APIs */
 #ifdef _WIN32
 #undef chdir
@@ -88,19 +84,11 @@ char *strchr(char*,char);
 #include <sys/param.h>
 #include <sys/mount.h>
 
-rb_encoding *
-rb_utf8mac_encoding(void)
-{
-    static rb_encoding *utf8mac;
-    if (!utf8mac) utf8mac = rb_enc_find("UTF8-MAC");
-    return utf8mac;
-}
-
 static inline int
-is_hfs(const char *path)
+is_hfs(DIR *dirp)
 {
     struct statfs buf;
-    if (statfs(path, &buf) == 0) {
+    if (fstatfs(dirfd(dirp), &buf) == 0) {
 	return buf.f_type == 17; /* HFS on darwin */
     }
     return FALSE;
@@ -393,6 +381,7 @@ dir_memsize(const void *ptr)
 static const rb_data_type_t dir_data_type = {
     "dir",
     {dir_mark, dir_free, dir_memsize,},
+    NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 static VALUE dir_close(VALUE);
@@ -422,8 +411,12 @@ dir_s_alloc(VALUE klass)
 /*
  *  call-seq:
  *     Dir.new( string ) -> aDir
+ *     Dir.new( string, encoding: enc ) -> aDir
  *
  *  Returns a new directory object for the named directory.
+ *
+ *  The optional <i>enc</i> argument specifies the encoding of the directory.
+ *  If not specified, the filesystem encoding is used.
  */
 static VALUE
 dir_initialize(int argc, VALUE *argv, VALUE dir)
@@ -431,18 +424,20 @@ dir_initialize(int argc, VALUE *argv, VALUE dir)
     struct dir_data *dp;
     rb_encoding  *fsenc;
     VALUE dirname, opt, orig;
-    static VALUE sym_enc;
+    static ID keyword_ids[1];
 
-    if (!sym_enc) {
-	sym_enc = ID2SYM(rb_intern("encoding"));
+    if (!keyword_ids[0]) {
+	keyword_ids[0] = rb_intern("encoding");
     }
+
     fsenc = rb_filesystem_encoding();
 
     rb_scan_args(argc, argv, "1:", &dirname, &opt);
 
     if (!NIL_P(opt)) {
-	VALUE enc = rb_hash_aref(opt, sym_enc);
-	if (!NIL_P(enc)) {
+	VALUE enc;
+	rb_get_kwargs(opt, keyword_ids, 0, 1, &enc);
+	if (enc != Qundef && !NIL_P(enc)) {
 	    fsenc = rb_to_encoding(enc);
 	}
     }
@@ -475,7 +470,12 @@ dir_initialize(int argc, VALUE *argv, VALUE dir)
 /*
  *  call-seq:
  *     Dir.open( string ) -> aDir
+ *     Dir.open( string, encoding: enc ) -> aDir
  *     Dir.open( string ) {| aDir | block } -> anObject
+ *     Dir.open( string, encoding: enc ) {| aDir | block } -> anObject
+ *
+ *  The optional <i>enc</i> argument specifies the encoding of the directory.
+ *  If not specified, the filesystem encoding is used.
  *
  *  With no block, <code>open</code> is a synonym for
  *  <code>Dir::new</code>. If a block is present, it is passed
@@ -507,8 +507,6 @@ static struct dir_data *
 dir_check(VALUE dir)
 {
     struct dir_data *dirp;
-    if (!OBJ_UNTRUSTED(dir) && rb_safe_level() >= 4)
-	rb_raise(rb_eSecurityError, "Insecure: operation on trusted Dir");
     rb_check_frozen(dir);
     dirp = rb_check_typeddata(dir, &dir_data_type);
     if (!dirp->dir) dir_closed();
@@ -561,50 +559,10 @@ dir_path(VALUE dir)
     return rb_str_dup(dirp->path);
 }
 
-#if defined HAVE_READDIR_R
-# define READDIR(dir, enc, entry, dp) (readdir_r((dir), (entry), &(dp)) == 0 && (dp) != 0)
-#elif defined _WIN32
-# define READDIR(dir, enc, entry, dp) (((dp) = rb_w32_readdir((dir), (enc))) != 0)
+#if defined _WIN32
+# define READDIR(dir, enc) rb_w32_readdir((dir), (enc))
 #else
-# define READDIR(dir, enc, entry, dp) (((dp) = readdir(dir)) != 0)
-#endif
-#if defined HAVE_READDIR_R
-# define IF_HAVE_READDIR_R(something) something
-#else
-# define IF_HAVE_READDIR_R(something) /* nothing */
-#endif
-
-#if defined SIZEOF_STRUCT_DIRENT_TOO_SMALL
-# include <limits.h>
-# define NAME_MAX_FOR_STRUCT_DIRENT 255
-# if defined NAME_MAX
-#  if NAME_MAX_FOR_STRUCT_DIRENT < NAME_MAX
-#   undef  NAME_MAX_FOR_STRUCT_DIRENT
-#   define NAME_MAX_FOR_STRUCT_DIRENT NAME_MAX
-#  endif
-# endif
-# if defined _POSIX_NAME_MAX
-#  if NAME_MAX_FOR_STRUCT_DIRENT < _POSIX_NAME_MAX
-#   undef  NAME_MAX_FOR_STRUCT_DIRENT
-#   define NAME_MAX_FOR_STRUCT_DIRENT _POSIX_NAME_MAX
-#  endif
-# endif
-# if defined _XOPEN_NAME_MAX
-#  if NAME_MAX_FOR_STRUCT_DIRENT < _XOPEN_NAME_MAX
-#   undef  NAME_MAX_FOR_STRUCT_DIRENT
-#   define NAME_MAX_FOR_STRUCT_DIRENT _XOPEN_NAME_MAX
-#  endif
-# endif
-# define DEFINE_STRUCT_DIRENT \
-  union { \
-    struct dirent dirent; \
-    char dummy[offsetof(struct dirent, d_name) + \
-	       NAME_MAX_FOR_STRUCT_DIRENT + 1]; \
-  }
-# define STRUCT_DIRENT(entry) ((entry).dirent)
-#else
-# define DEFINE_STRUCT_DIRENT struct dirent
-# define STRUCT_DIRENT(entry) (entry)
+# define READDIR(dir, enc) readdir((dir))
 #endif
 
 /*
@@ -624,11 +582,10 @@ dir_read(VALUE dir)
 {
     struct dir_data *dirp;
     struct dirent *dp;
-    IF_HAVE_READDIR_R(DEFINE_STRUCT_DIRENT entry);
 
     GetDIR(dir, dirp);
     errno = 0;
-    if (READDIR(dirp->dir, dirp->enc, &STRUCT_DIRENT(entry), dp)) {
+    if ((dp = READDIR(dirp->dir, dirp->enc)) != NULL) {
 	return rb_external_str_new_with_enc(dp->d_name, NAMLEN(dp), dirp->enc);
     }
     else {
@@ -662,28 +619,24 @@ dir_each(VALUE dir)
 {
     struct dir_data *dirp;
     struct dirent *dp;
-    IF_HAVE_READDIR_R(DEFINE_STRUCT_DIRENT entry);
     IF_HAVE_HFS(int hfs_p);
 
     RETURN_ENUMERATOR(dir, 0, 0);
     GetDIR(dir, dirp);
     rewinddir(dirp->dir);
-    IF_HAVE_HFS(hfs_p = !NIL_P(dirp->path) && is_hfs(RSTRING_PTR(dirp->path)));
-    while (READDIR(dirp->dir, dirp->enc, &STRUCT_DIRENT(entry), dp)) {
+    IF_HAVE_HFS(hfs_p = is_hfs(dirp->dir));
+    while ((dp = READDIR(dirp->dir, dirp->enc)) != NULL) {
 	const char *name = dp->d_name;
 	size_t namlen = NAMLEN(dp);
 	VALUE path;
 #if HAVE_HFS
-	VALUE utf8str = Qnil;
-	rb_encoding *utf8mac = 0;
-	if (hfs_p && has_nonascii(name, namlen) && (utf8mac = rb_utf8mac_encoding()) != 0) {
-	    utf8str = rb_str_conv_enc(rb_tainted_str_new(name, namlen),
-				      utf8mac, rb_utf8_encoding());
-	    RSTRING_GETMEM(utf8str, name, namlen);
+	if (hfs_p && has_nonascii(name, namlen) &&
+	    !NIL_P(path = rb_str_normalize_ospath(name, namlen))) {
+	    path = rb_external_str_with_enc(path, dirp->enc);
 	}
+	else
 #endif
 	path = rb_external_str_new_with_enc(name, namlen, dirp->enc);
-	IF_HAVE_HFS(if (!NIL_P(utf8str)) rb_str_resize(utf8str, 0));
 	rb_yield(path);
 	if (dirp->dir == NULL) dir_closed();
     }
@@ -788,9 +741,6 @@ dir_rewind(VALUE dir)
 {
     struct dir_data *dirp;
 
-    if (rb_safe_level() >= 4 && !OBJ_UNTRUSTED(dir)) {
-	rb_raise(rb_eSecurityError, "Insecure: can't close");
-    }
     GetDIR(dir, dirp);
     rewinddir(dirp->dir);
     return dir;
@@ -938,7 +888,6 @@ rb_dir_getwd(void)
     char *path;
     VALUE cwd;
 
-    rb_secure(4);
     path = my_getcwd();
     cwd = rb_tainted_str_new2(path);
     rb_enc_associate(cwd, rb_filesystem_encoding());
@@ -1083,18 +1032,25 @@ sys_warning_1(VALUE mesg)
  */
 #define to_be_ignored(e) ((e) == ENOENT || (e) == ENOTDIR)
 
+#ifdef _WIN32
+#define STAT(p, s)	rb_w32_ustati64((p), (s))
+#else
+#define STAT(p, s)	stat((p), (s))
+#endif
+
 /* System call with warning */
 static int
 do_stat(const char *path, struct stat *pst, int flags)
 
 {
-    int ret = stat(path, pst);
+    int ret = STAT(path, pst);
     if (ret < 0 && !to_be_ignored(errno))
 	sys_warning(path);
 
     return ret;
 }
 
+#if defined HAVE_LSTAT || defined lstat
 static int
 do_lstat(const char *path, struct stat *pst, int flags)
 {
@@ -1104,6 +1060,9 @@ do_lstat(const char *path, struct stat *pst, int flags)
 
     return ret;
 }
+#else
+#define do_lstat do_stat
+#endif
 
 static DIR *
 do_opendir(const char *path, int flags, rb_encoding *enc)
@@ -1440,33 +1399,37 @@ glob_helper(
     if (magical || recursive) {
 	struct dirent *dp;
 	DIR *dirp;
-	IF_HAVE_READDIR_R(DEFINE_STRUCT_DIRENT entry);
 	IF_HAVE_HFS(int hfs_p);
 	dirp = do_opendir(*path ? path : ".", flags, enc);
 	if (dirp == NULL) return 0;
-	IF_HAVE_HFS(hfs_p = is_hfs(*path ? path : "."));
+	IF_HAVE_HFS(hfs_p = is_hfs(dirp));
 
-	while (READDIR(dirp, enc, &STRUCT_DIRENT(entry), dp)) {
+	while ((dp = READDIR(dirp, enc)) != NULL) {
 	    char *buf;
 	    enum answer new_isdir = UNKNOWN;
 	    const char *name;
 	    size_t namlen;
+	    int dotfile = 0;
 	    IF_HAVE_HFS(VALUE utf8str = Qnil);
 
 	    if (recursive && dp->d_name[0] == '.') {
-		/* always skip current and parent directories not to recurse infinitely */
-		if (!dp->d_name[1]) continue;
-		if (dp->d_name[1] == '.' && !dp->d_name[2]) continue;
+		++dotfile;
+		if (!dp->d_name[1]) {
+		    /* unless DOTMATCH, skip current directories not to recurse infinitely */
+		    if (!(flags & FNM_DOTMATCH)) continue;
+		    ++dotfile;
+		}
+		else if (dp->d_name[1] == '.' && !dp->d_name[2]) {
+		    /* always skip parent directories not to recurse infinitely */
+		    continue;
+		}
 	    }
 
 	    name = dp->d_name;
 	    namlen = NAMLEN(dp);
 # if HAVE_HFS
 	    if (hfs_p && has_nonascii(name, namlen)) {
-		rb_encoding *utf8mac = rb_utf8mac_encoding();
-		if (utf8mac) {
-		    utf8str = rb_str_conv_enc(rb_str_new(name, namlen),
-					      utf8mac, rb_utf8_encoding());
+		if (!NIL_P(utf8str = rb_str_normalize_ospath(name, namlen))) {
 		    RSTRING_GETMEM(utf8str, name, namlen);
 		}
 	    }
@@ -1478,7 +1441,7 @@ glob_helper(
 		break;
 	    }
 	    name = buf + pathlen + (dirsep != 0);
-	    if (recursive && ((flags & FNM_DOTMATCH) || dp->d_name[0] != '.')) {
+	    if (recursive && dotfile < ((flags & FNM_DOTMATCH) ? 2 : 1)) {
 		/* RECURSIVE never match dot files unless FNM_DOTMATCH is set */
 #ifndef _WIN32
 		if (do_lstat(buf, &st, flags) == 0)
@@ -1803,7 +1766,7 @@ rb_push_glob(VALUE str, int flags) /* '\0' is delimiter */
 }
 
 static VALUE
-dir_globs(long argc, VALUE *argv, int flags)
+dir_globs(long argc, const VALUE *argv, int flags)
 {
     VALUE ary = rb_ary_new();
     long i;
@@ -1840,49 +1803,56 @@ dir_s_aref(int argc, VALUE *argv, VALUE obj)
 
 /*
  *  call-seq:
- *     Dir.glob( pattern, [flags] ) -> array
- *     Dir.glob( pattern, [flags] ) {| filename | block }  -> nil
+ *     Dir.glob( pattern, [flags] ) -> matches
+ *     Dir.glob( pattern, [flags] ) { |filename| block }  -> nil
  *
- *  Returns the filenames found by expanding <i>pattern</i> which is
- *  an +Array+ of the patterns or the pattern +String+, either as an
- *  <i>array</i> or as parameters to the block. Note that this pattern
- *  is not a regexp (it's closer to a shell glob). See
- *  <code>File::fnmatch</code> for the meaning of the <i>flags</i>
- *  parameter. Note that case sensitivity depends on your system (so
- *  <code>File::FNM_CASEFOLD</code> is ignored), as does the order
- *  in which the results are returned.
+ *  Expands +pattern+, which is an Array of patterns or a pattern String, and
+ *  returns the results as +matches+ or as arguments given to the block.
  *
- *  <code>*</code>::        Matches any file. Can be restricted by
- *                          other values in the glob. <code>*</code>
- *                          will match all files; <code>c*</code> will
- *                          match all files beginning with
- *                          <code>c</code>; <code>*c</code> will match
- *                          all files ending with <code>c</code>; and
- *                          <code>\*c\*</code> will match all files that
- *                          have <code>c</code> in them (including at
- *                          the beginning or end). Equivalent to
- *                          <code>/ .* /x</code> in regexp. Note, this
- *                          will not match Unix-like hidden files (dotfiles).
- *                          In order to include those in the match results,
- *                          you must use something like <code>"{*,.*}"</code>.
- *  <code>**</code>::       Matches directories recursively.
- *  <code>?</code>::        Matches any one character. Equivalent to
- *                          <code>/.{1}/</code> in regexp.
- *  <code>[set]</code>::    Matches any one character in +set+.
- *                          Behaves exactly like character sets in
- *                          Regexp, including set negation
- *                          (<code>[^a-z]</code>).
- *  <code>{p,q}</code>::    Matches either literal <code>p</code> or
- *                          literal <code>q</code>. Matching literals
- *                          may be more than one character in length.
- *                          More than two literals may be specified.
- *                          Equivalent to pattern alternation in
- *                          regexp.
- *  <code> \\ </code>::     Escapes the next metacharacter.
- *                          Note that this means you cannot use backslash
- *                          in windows as part of a glob,
- *                          i.e. <code>Dir["c:\\foo*"]</code> will not work,
- *                          use <code>Dir["c:/foo*"]</code> instead.
+ *  Note that this pattern is not a regexp, it's closer to a shell glob.  See
+ *  File::fnmatch for the meaning of the +flags+ parameter.  Note that case
+ *  sensitivity depends on your system (so File::FNM_CASEFOLD is ignored), as
+ *  does the order in which the results are returned.
+ *
+ *  <code>*</code>::
+ *    Matches any file. Can be restricted by other values in the glob.
+ *    Equivalent to <code>/ .* /x</code> in regexp.
+ *
+ *    <code>*</code>::     Matches all files
+ *    <code>c*</code>::    Matches all files beginning with <code>c</code>
+ *    <code>*c</code>::    Matches all files ending with <code>c</code>
+ *    <code>\*c\*</code>:: Match all files that have <code>c</code> in them
+ *                         (including at the beginning or end).
+ *
+ *    Note, this will not match Unix-like hidden files (dotfiles).  In order
+ *    to include those in the match results, you must use the
+ *    File::FNM_DOTMATCH flag or something like <code>"{*,.*}"</code>.
+ *
+ *  <code>**</code>::
+ *    Matches directories recursively.
+ *
+ *  <code>?</code>::
+ *    Matches any one character. Equivalent to <code>/.{1}/</code> in regexp.
+ *
+ *  <code>[set]</code>::
+ *    Matches any one character in +set+.  Behaves exactly like character sets
+ *    in Regexp, including set negation (<code>[^a-z]</code>).
+ *
+ *  <code>{p,q}</code>::
+ *    Matches either literal <code>p</code> or literal <code>q</code>.
+ *    Equivalent to pattern alternation in regexp.
+ *
+ *    Matching literals may be more than one character in length.  More than
+ *    two literals may be specified.
+ *
+ *  <code> \\ </code>::
+ *    Escapes the next metacharacter.
+ *
+ *    Note that this means you cannot use backslash on windows as part of a
+ *    glob, i.e.  <code>Dir["c:\\foo*"]</code> will not work, use
+ *    <code>Dir["c:/foo*"]</code> instead.
+ *
+ *  Examples:
  *
  *     Dir["config.?"]                     #=> ["config.h"]
  *     Dir.glob("config.?")                #=> ["config.h"]
@@ -1923,7 +1893,7 @@ dir_s_glob(int argc, VALUE *argv, VALUE obj)
     }
     else {
 	volatile VALUE v = ary;
-	ary = dir_globs(RARRAY_LEN(v), RARRAY_PTR(v), flags);
+	ary = dir_globs(RARRAY_LEN(v), RARRAY_CONST_PTR(v), flags);
     }
 
     if (rb_block_given_p()) {
@@ -1945,8 +1915,10 @@ dir_open_dir(int argc, VALUE *argv)
 
 /*
  *  call-seq:
- *     Dir.foreach( dirname ) {| filename | block }  -> nil
- *     Dir.foreach( dirname )                        -> an_enumerator
+ *     Dir.foreach( dirname ) {| filename | block }                 -> nil
+ *     Dir.foreach( dirname, encoding: enc ) {| filename | block }  -> nil
+ *     Dir.foreach( dirname )                                       -> an_enumerator
+ *     Dir.foreach( dirname, encoding: enc )                        -> an_enumerator
  *
  *  Calls the block once for each entry in the named directory, passing
  *  the filename of each entry as a parameter to the block.
@@ -1976,11 +1948,15 @@ dir_foreach(int argc, VALUE *argv, VALUE io)
 
 /*
  *  call-seq:
- *     Dir.entries( dirname ) -> array
+ *     Dir.entries( dirname )                -> array
+ *     Dir.entries( dirname, encoding: enc ) -> array
  *
  *  Returns an array containing all of the filenames in the given
  *  directory. Will raise a <code>SystemCallError</code> if the named
  *  directory doesn't exist.
+ *
+ *  The optional <i>enc</i> argument specifies the encoding of the directory.
+ *  If not specified, the filesystem encoding is used.
  *
  *     Dir.entries("testdir")   #=> [".", "..", "config.h", "main.rb"]
  *
@@ -2025,37 +2001,44 @@ fnmatch_brace(const char *pattern, VALUE val, void *enc)
  *     File.fnmatch( pattern, path, [flags] ) -> (true or false)
  *     File.fnmatch?( pattern, path, [flags] ) -> (true or false)
  *
- *  Returns true if <i>path</i> matches against <i>pattern</i> The
- *  pattern is not a regular expression; instead it follows rules
- *  similar to shell filename globbing. It may contain the following
- *  metacharacters:
+ *  Returns true if +path+ matches against +pattern+.  The pattern is not a
+ *  regular expression; instead it follows rules similar to shell filename
+ *  globbing.  It may contain the following metacharacters:
  *
- *  <code>*</code>::        Matches any file. Can be restricted by
- *                          other values in the glob. <code>*</code>
- *                          will match all files; <code>c*</code> will
- *                          match all files beginning with
- *                          <code>c</code>; <code>*c</code> will match
- *                          all files ending with <code>c</code>; and
- *                          <code>\*c*</code> will match all files that
- *                          have <code>c</code> in them (including at
- *                          the beginning or end). Equivalent to
- *                          <code>/ .* /x</code> in regexp.
- *  <code>**</code>::       Matches directories recursively or files
- *                          expansively.
- *  <code>?</code>::        Matches any one character. Equivalent to
- *                          <code>/.{1}/</code> in regexp.
- *  <code>[set]</code>::    Matches any one character in +set+.
- *                          Behaves exactly like character sets in
- *                          Regexp, including set negation
- *                          (<code>[^a-z]</code>).
- *  <code> \ </code>::      Escapes the next metacharacter.
- *  <code>{a,b}</code>::    Matches pattern a and pattern b if
- *                          <code>File::FNM_EXTGLOB</code> flag is enabled.
- *                          Behaves like a Regexp union (<code>(?:a|b)</code>).
+ *  <code>*</code>::
+ *    Matches any file. Can be restricted by other values in the glob.
+ *    Equivalent to <code>/ .* /x</code> in regexp.
  *
- *  <i>flags</i> is a bitwise OR of the <code>FNM_xxx</code>
- *  parameters. The same glob pattern and flags are used by
- *  <code>Dir::glob</code>.
+ *    <code>*</code>::    Matches all files regular files
+ *    <code>c*</code>::   Matches all files beginning with <code>c</code>
+ *    <code>*c</code>::   Matches all files ending with <code>c</code>
+ *    <code>\*c*</code>:: Matches all files that have <code>c</code> in them
+ *                        (including at the beginning or end).
+ *
+ *    To match hidden files (that start with a <code>.</code> set the
+ *    File::FNM_DOTMATCH flag.
+ *
+ *  <code>**</code>::
+ *    Matches directories recursively or files expansively.
+ *
+ *  <code>?</code>::
+ *    Matches any one character. Equivalent to <code>/.{1}/</code> in regexp.
+ *
+ *  <code>[set]</code>::
+ *    Matches any one character in +set+.  Behaves exactly like character sets
+ *    in Regexp, including set negation (<code>[^a-z]</code>).
+ *
+ *  <code> \ </code>::
+ *    Escapes the next metacharacter.
+ *
+ *  <code>{a,b}</code>::
+ *    Matches pattern a and pattern b if File::FNM_EXTGLOB flag is enabled.
+ *    Behaves like a Regexp union (<code>(?:a|b)</code>).
+ *
+ *  +flags+ is a bitwise OR of the <code>FNM_XXX</code> constants. The same
+ *  glob pattern and flags are used by Dir::glob.
+ *
+ *  Examples:
  *
  *     File.fnmatch('cat',       'cat')        #=> true  # match entire string
  *     File.fnmatch('cat',       'category')   #=> false # only match partial string
@@ -2155,12 +2138,18 @@ dir_s_home(int argc, VALUE *argv, VALUE obj)
     VALUE user;
     const char *u = 0;
 
-    rb_scan_args(argc, argv, "01", &user);
+    rb_check_arity(argc, 0, 1);
+    user = (argc > 0) ? argv[0] : Qnil;
     if (!NIL_P(user)) {
 	SafeStringValue(user);
+	rb_must_asciicompat(user);
 	u = StringValueCStr(user);
+	if (*u) {
+	    return rb_home_dir_of(user, rb_str_new(0, 0));
+	}
     }
-    return rb_home_dir(u, rb_str_new(0, 0));
+    return rb_default_home_dir(rb_str_new(0, 0));
+
 }
 
 #if 0
@@ -2178,6 +2167,13 @@ rb_file_directory_p()
 {
 }
 #endif
+
+static VALUE
+rb_dir_exists_p(VALUE obj, VALUE fname)
+{
+    rb_warning("Dir.exists? is a deprecated name, use Dir.exist? instead");
+    return rb_file_directory_p(obj, fname);
+}
 
 /*
  *  Objects of class <code>Dir</code> are directory streams representing
@@ -2228,15 +2224,42 @@ Init_Dir(void)
     rb_define_singleton_method(rb_cDir,"glob", dir_s_glob, -1);
     rb_define_singleton_method(rb_cDir,"[]", dir_s_aref, -1);
     rb_define_singleton_method(rb_cDir,"exist?", rb_file_directory_p, 1);
-    rb_define_singleton_method(rb_cDir,"exists?", rb_file_directory_p, 1);
+    rb_define_singleton_method(rb_cDir,"exists?", rb_dir_exists_p, 1);
 
     rb_define_singleton_method(rb_cFile,"fnmatch", file_s_fnmatch, -1);
     rb_define_singleton_method(rb_cFile,"fnmatch?", file_s_fnmatch, -1);
 
+    /*  Document-const: File::Constants::FNM_NOESCAPE
+     *
+     *  Disables escapes in File.fnmatch and Dir.glob patterns
+     */
     rb_file_const("FNM_NOESCAPE", INT2FIX(FNM_NOESCAPE));
+
+    /*  Document-const: File::Constants::FNM_PATHNAME
+     *
+     *  Wildcards in File.fnmatch and Dir.glob patterns do not match directory
+     *  separators
+     */
     rb_file_const("FNM_PATHNAME", INT2FIX(FNM_PATHNAME));
+
+    /*  Document-const: File::Constants::FNM_DOTMATCH
+     *
+     *  The '*' wildcard matches filenames starting with "." in File.fnmatch
+     *  and Dir.glob patterns
+     */
     rb_file_const("FNM_DOTMATCH", INT2FIX(FNM_DOTMATCH));
+
+    /*  Document-const: File::Constants::FNM_CASEFOLD
+     *
+     *  Makes File.fnmatch patterns case insensitive (but not Dir.glob
+     *  patterns).
+     */
     rb_file_const("FNM_CASEFOLD", INT2FIX(FNM_CASEFOLD));
+
+    /*  Document-const: File::Constants::FNM_EXTGLOB
+     *
+     *  Allows file globbing through "{a,b}" in File.fnmatch patterns.
+     */
     rb_file_const("FNM_EXTGLOB", INT2FIX(FNM_EXTGLOB));
     rb_file_const("FNM_SYSCASE", INT2FIX(FNM_SYSCASE));
 }

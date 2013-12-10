@@ -52,9 +52,10 @@
 char *getenv();
 #endif
 
-#define numberof(array) (int)(sizeof(array) / sizeof((array)[0]))
-
-#if defined DISABLE_RUBYGEMS && DISABLE_RUBYGEMS
+#ifndef DISABLE_RUBYGEMS
+# define DISABLE_RUBYGEMS 0
+#endif
+#if DISABLE_RUBYGEMS
 #define DEFAULT_RUBYGEMS_ENABLED "disabled"
 #else
 #define DEFAULT_RUBYGEMS_ENABLED "enabled"
@@ -116,7 +117,7 @@ cmdline_options_init(struct cmdline_options *opt)
     opt->src.enc.index = src_encoding_index;
     opt->ext.enc.index = -1;
     opt->intern.enc.index = -1;
-#if defined DISABLE_RUBYGEMS && DISABLE_RUBYGEMS
+#if DISABLE_RUBYGEMS
     opt->disable |= DISABLE_BIT(gems);
 #endif
     return opt;
@@ -560,7 +561,6 @@ require_libraries(VALUE *req_list)
     int prev_parse_in_eval = th->parse_in_eval;
     th->parse_in_eval = 0;
 
-    Init_ext();		/* should be called here for some reason :-( */
     CONST_ID(require, "require");
     while (list && RARRAY_LEN(list) > 0) {
 	VALUE feature = rb_ary_shift(list);
@@ -590,11 +590,11 @@ process_sflag(int *sflag)
 {
     if (*sflag > 0) {
 	long n;
-	VALUE *args;
+	const VALUE *args;
 	VALUE argv = rb_argv;
 
 	n = RARRAY_LEN(argv);
-	args = RARRAY_PTR(argv);
+	args = RARRAY_CONST_PTR(argv);
 	while (n > 0) {
 	    VALUE v = *args++;
 	    char *s = StringValuePtr(v);
@@ -767,7 +767,7 @@ set_option_encoding_once(const char *type, VALUE *name, const char *e, long elen
     if (*name &&
 	rb_funcall(ename, rb_intern("casecmp"), 1, *name) != INT2FIX(0)) {
 	rb_raise(rb_eRuntimeError,
-		 "%s already set to %s", type, RSTRING_PTR(*name));
+		 "%s already set to %"PRIsVALUE, type, *name);
     }
     *name = ename;
 }
@@ -1207,7 +1207,8 @@ opt_enc_index(VALUE enc_name)
     return i;
 }
 
-#define rb_progname (GET_VM()->progname)
+#define rb_progname      (GET_VM()->progname)
+#define rb_orig_progname (GET_VM()->orig_progname)
 VALUE rb_argv0;
 
 static VALUE
@@ -1404,6 +1405,7 @@ process_options(int argc, char **argv, struct cmdline_options *opt)
     translit_char(RSTRING_PTR(opt->script_name), '\\', '/');
 #endif
 
+    ruby_gc_set_params(opt->safe_level);
     ruby_init_loadpath_safe(opt->safe_level);
     Init_enc();
     rb_enc_find_index("encdb");
@@ -1446,12 +1448,9 @@ process_options(int argc, char **argv, struct cmdline_options *opt)
 			rb_enc_associate(rb_str_dup(RARRAY_AREF(load_path, i)), lenc));
 	}
     }
+    Init_ext();		/* load statically linked extensions before rubygems */
     if (!(opt->disable & DISABLE_BIT(gems))) {
-#if defined DISABLE_RUBYGEMS && DISABLE_RUBYGEMS
-	rb_require("rubygems");
-#else
 	rb_define_module("Gem");
-#endif
     }
     ruby_init_prelude();
     ruby_set_argv(argc, argv);
@@ -1570,7 +1569,6 @@ process_options(int argc, char **argv, struct cmdline_options *opt)
     rb_define_readonly_boolean("$-a", opt->do_split);
 
     rb_set_safe_level(opt->safe_level);
-    rb_gc_set_params();
 
     return iseq;
 }
@@ -1588,9 +1586,9 @@ load_file_internal(VALUE arg)
     extern VALUE rb_stdin;
     struct load_file_arg *argp = (struct load_file_arg *)arg;
     VALUE parser = argp->parser;
-    VALUE fname_v = rb_str_encode_ospath(argp->fname);
+    VALUE orig_fname = argp->fname;
+    VALUE fname_v = rb_str_encode_ospath(orig_fname);
     const char *fname = StringValueCStr(fname_v);
-    const char *orig_fname = StringValueCStr(argp->fname);
     int script = argp->script;
     struct cmdline_options *opt = argp->opt;
     VALUE f;
@@ -1724,10 +1722,10 @@ load_file_internal(VALUE arg)
     if (NIL_P(f)) {
 	f = rb_str_new(0, 0);
 	rb_enc_associate(f, enc);
-	return (VALUE)rb_parser_compile_string(parser, orig_fname, f, line_start);
+	return (VALUE)rb_parser_compile_string_path(parser, orig_fname, f, line_start);
     }
     rb_funcall(f, set_encoding, 2, rb_enc_from_encoding(enc), rb_str_new_cstr("-"));
-    tree = rb_parser_compile_file(parser, orig_fname, f, line_start);
+    tree = rb_parser_compile_file_path(parser, orig_fname, f, line_start);
     rb_funcall(f, set_encoding, 1, rb_parser_encoding(parser));
     if (script && tree && rb_parser_end_seen_p(parser)) {
 	/*
@@ -1770,27 +1768,69 @@ load_file(VALUE parser, VALUE fname, int script, struct cmdline_options *opt)
 void *
 rb_load_file(const char *fname)
 {
-    struct cmdline_options opt;
     VALUE fname_v = rb_str_new_cstr(fname);
+    return rb_load_file_str(fname_v);
+}
+
+void *
+rb_load_file_str(VALUE fname_v)
+{
+    struct cmdline_options opt;
 
     return load_file(rb_parser_new(), fname_v, 0, cmdline_options_init(&opt));
+}
+
+/*
+ *  call-seq:
+ *     Process.argv0  -> frozen_string
+ *
+ *  Returns the name of the script being executed.  The value is not
+ *  affected by assigning a new value to $0.
+ *
+ *  This method first appeared in Ruby 2.1 to serve as a global
+ *  variable free means to get the script name.
+ */
+
+static VALUE
+proc_argv0(VALUE process)
+{
+    return rb_orig_progname;
+}
+
+/*
+ *  call-seq:
+ *     Process.setproctitle(string)  -> string
+ *
+ *  Sets the process title that appears on the ps(1) command.  Not
+ *  necessarily effective on all platforms.  No exception will be
+ *  raised regardless of the result, nor will NotImplementedError be
+ *  raised even if the platform does not support the feature.
+ *
+ *  Calling this method does not affect the value of $0.
+ *
+ *     Process.setproctitle('myapp: worker #%d' % worker_id)
+ *
+ *  This method first appeared in Ruby 2.1 to serve as a global
+ *  variable free means to change the process title.
+ */
+
+static VALUE
+proc_setproctitle(VALUE process, VALUE title)
+{
+    StringValue(title);
+
+    setproctitle("%.*s", RSTRING_LENINT(title), RSTRING_PTR(title));
+
+    return title;
 }
 
 static void
 set_arg0(VALUE val, ID id)
 {
-    char *s;
-    long i;
-
     if (origarg.argv == 0)
 	rb_raise(rb_eRuntimeError, "$0 not initialized");
-    StringValue(val);
-    s = RSTRING_PTR(val);
-    i = RSTRING_LEN(val);
 
-    setproctitle("%.*s", (int)i, s);
-
-    rb_progname = rb_obj_freeze(rb_external_str_new(s, i));
+    rb_progname = rb_str_new_frozen(proc_setproctitle(rb_mProcess, val));
 }
 
 /*! Sets the current script name to this value.
@@ -1802,7 +1842,7 @@ void
 ruby_script(const char *name)
 {
     if (name) {
-	rb_progname = rb_external_str_new(name, strlen(name));
+	rb_orig_progname = rb_progname = rb_external_str_new(name, strlen(name));
 	rb_vm_set_progname(rb_progname);
     }
 }
@@ -1814,7 +1854,7 @@ ruby_script(const char *name)
 void
 ruby_set_script_name(VALUE name)
 {
-    rb_progname = rb_str_dup(name);
+    rb_orig_progname = rb_progname = rb_str_dup(name);
     rb_vm_set_progname(rb_progname);
 }
 
@@ -1881,6 +1921,9 @@ ruby_prog_init(void)
 
     rb_define_hooked_variable("$0", &rb_progname, 0, set_arg0);
     rb_define_hooked_variable("$PROGRAM_NAME", &rb_progname, 0, set_arg0);
+
+    rb_define_module_function(rb_mProcess, "argv0", proc_argv0, 0);
+    rb_define_module_function(rb_mProcess, "setproctitle", proc_setproctitle, 1);
 
     /*
      * ARGV contains the command line arguments used to run ruby with the

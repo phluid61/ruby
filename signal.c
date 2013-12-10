@@ -23,6 +23,19 @@
 # include <unistd.h>
 #endif
 
+#ifdef HAVE_VALGRIND_MEMCHECK_H
+# include <valgrind/memcheck.h>
+# ifndef VALGRIND_MAKE_MEM_DEFINED
+#  define VALGRIND_MAKE_MEM_DEFINED(p, n) VALGRIND_MAKE_READABLE((p), (n))
+# endif
+# ifndef VALGRIND_MAKE_MEM_UNDEFINED
+#  define VALGRIND_MAKE_MEM_UNDEFINED(p, n) VALGRIND_MAKE_WRITABLE((p), (n))
+# endif
+#else
+# define VALGRIND_MAKE_MEM_DEFINED(p, n) 0
+# define VALGRIND_MAKE_MEM_UNDEFINED(p, n) 0
+#endif
+
 #if defined(__native_client__) && defined(NACL_NEWLIB)
 # include "nacl/signal.h"
 #endif
@@ -42,7 +55,7 @@ ruby_atomic_compare_and_swap(rb_atomic_t *ptr, rb_atomic_t cmp,
 {
     rb_atomic_t old = *ptr;
     if (old == cmp) {
-      *ptr = newval;
+	*ptr = newval;
     }
     return old;
 }
@@ -440,6 +453,8 @@ static struct {
 
 #ifdef __dietlibc__
 #define sighandler_t sh_t
+#else
+#define sighandler_t ruby_sighandler_t
 #endif
 
 typedef RETSIGTYPE (*sighandler_t)(int);
@@ -452,7 +467,8 @@ typedef RETSIGTYPE ruby_sigaction_t(int);
 #endif
 
 #ifdef USE_SIGALTSTACK
-int rb_sigaltstack_size(void)
+int
+rb_sigaltstack_size(void)
 {
     /* XXX: BSD_vfprintf() uses >1500KiB stack and x86-64 need >5KiB stack. */
     int size = 8192;
@@ -521,6 +537,7 @@ ruby_signal(int signum, sighandler_t handler)
        )
 	sigact.sa_flags |= SA_ONSTACK;
 #endif
+    (void)VALGRIND_MAKE_MEM_DEFINED(&old, sizeof(old));
     if (sigaction(signum, &sigact, &old) < 0) {
 	if (errno != 0 && errno != EINVAL) {
 	    rb_bug_errno("sigaction", errno);
@@ -610,7 +627,7 @@ rb_get_next_signal(void)
 }
 
 
-#ifdef USE_SIGALTSTACK
+#if defined(USE_SIGALTSTACK) || defined(_WIN32)
 static void
 check_stack_overflow(const void *addr)
 {
@@ -621,9 +638,18 @@ check_stack_overflow(const void *addr)
 	ruby_thread_stack_overflow(th);
     }
 }
-#define CHECK_STACK_OVERFLOW() check_stack_overflow(info->si_addr)
+#ifdef _WIN32
+#define CHECK_STACK_OVERFLOW() check_stack_overflow(0)
+#else
+#define FAULT_ADDRESS info->si_addr
+#define CHECK_STACK_OVERFLOW() check_stack_overflow(FAULT_ADDRESS)
+#define MESSAGE_FAULT_ADDRESS " at %p", FAULT_ADDRESS
+#endif
 #else
 #define CHECK_STACK_OVERFLOW() (void)0
+#endif
+#ifndef MESSAGE_FAULT_ADDRESS
+#define MESSAGE_FAULT_ADDRESS
 #endif
 
 #ifdef SIGBUS
@@ -638,12 +664,13 @@ sigbus(int sig SIGINFO_ARG)
 #if defined __APPLE__
     CHECK_STACK_OVERFLOW();
 #endif
-    rb_bug("Bus Error");
+    rb_bug("Bus Error" MESSAGE_FAULT_ADDRESS);
 }
 #endif
 
 #ifdef SIGSEGV
-static void ruby_abort(void)
+static void
+ruby_abort(void)
 {
 #ifdef __sun
     /* Solaris's abort() is async signal unsafe. Of course, it is not
@@ -674,7 +701,7 @@ sigsegv(int sig SIGINFO_ARG)
 
     segv_received = 1;
     ruby_disable_gc_stress = 1;
-    rb_bug("Segmentation fault");
+    rb_bug("Segmentation fault" MESSAGE_FAULT_ADDRESS);
 }
 #endif
 

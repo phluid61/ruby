@@ -83,20 +83,8 @@ class TestThread < Test::Unit::TestCase
   def test_thread_variable_frozen
     t = Thread.new { }.join
     t.freeze
-    assert_raises(RuntimeError) do
+    assert_raise(RuntimeError) do
       t.thread_variable_set(:foo, "bar")
-    end
-  end
-
-  def test_thread_variable_security
-    t = Thread.new { sleep }
-
-    assert_raises(SecurityError) do
-      Thread.new { $SAFE = 4; t.thread_variable_get(:foo) }.join
-    end
-
-    assert_raises(SecurityError) do
-      Thread.new { $SAFE = 4; t.thread_variable_set(:foo, :baz) }.join
     end
   end
 
@@ -394,16 +382,6 @@ class TestThread < Test::Unit::TestCase
   end
 
   def test_thread_local_security
-    t = Thread.new { sleep }
-
-    assert_raise(SecurityError) do
-      Thread.new { $SAFE = 4; t[:foo] }.join
-    end
-
-    assert_raise(SecurityError) do
-      Thread.new { $SAFE = 4; t[:foo] = :baz }.join
-    end
-
     assert_raise(RuntimeError) do
       Thread.new do
         Thread.current[:foo] = :bar
@@ -515,10 +493,7 @@ class TestThread < Test::Unit::TestCase
     skip 'with win32ole, cannot run this testcase because win32ole redefines Thread#intialize' if defined?(WIN32OLE)
     bug5083 = '[ruby-dev:44208]'
     assert_equal([], Thread.new(&Module.method(:nesting)).value)
-    error = assert_raise(RuntimeError) do
-      Thread.new(:to_s, &Module.method(:undef_method)).join
-    end
-    assert_equal("Can't call on top of Fiber or Thread", error.message, bug5083)
+    assert_instance_of(Thread, Thread.new(:to_s, &Class.new.method(:undef_method)).join)
   end
 
   def make_handle_interrupt_test_thread1 flag
@@ -750,6 +725,7 @@ _eom
   end
 
   def test_thread_join_in_trap
+    assert_separately [], <<-'EOS'
     assert_nothing_raised{
       t = Thread.new{ sleep 0.2; Process.kill(:INT, $$) }
 
@@ -759,7 +735,9 @@ _eom
 
       t.join
     }
+    EOS
 
+    assert_separately [], <<-'EOS'
     assert_equal(:normal_end,
                  begin
                    t = Thread.new{ sleep 0.2; Process.kill(:INT, $$); :normal_end }
@@ -770,16 +748,17 @@ _eom
                    t.value
                  end
                  )
+    EOS
   end
 
   def test_thread_join_current
-    assert_raises(ThreadError) do
+    assert_raise(ThreadError) do
       Thread.current.join
     end
   end
 
   def test_thread_join_main_thread
-    assert_raises(ThreadError) do
+    assert_raise(ThreadError) do
       Thread.new(Thread.current) {|t|
         t.join
       }.join
@@ -874,6 +853,23 @@ Thread.new(Thread.current) {|mth|
     end
   end
 
+  def test_mutex_unlock_on_trap
+    assert_in_out_err([], <<-INPUT, %w(locked unlocked false), [])
+      m = Mutex.new
+
+      Signal.trap("INT") { |signo|
+        m.unlock
+        puts "unlocked"
+      }
+
+      m.lock
+      puts "locked"
+      Process.kill("INT", $$)
+      sleep 0.01
+      puts m.locked?
+    INPUT
+  end
+
   def invoke_rec script, vm_stack_size, machine_stack_size, use_length = true
     env = {}
     env['RUBY_THREAD_VM_STACK_SIZE'] = vm_stack_size.to_s if vm_stack_size
@@ -917,4 +913,31 @@ Thread.new(Thread.current) {|mth|
     size_large = invoke_rec script, vm_stack_size, 1024 * 1024 * 10
     assert_operator(size_default, :<=, size_large, "large size")
   end
+
+  def test_blocking_mutex_unlocked_on_fork
+    bug8433 = '[ruby-core:55102] [Bug #8433]'
+
+    mutex = Mutex.new
+    flag = false
+    mutex.lock
+
+    th = Thread.new do
+      mutex.synchronize do
+        flag = true
+        sleep
+      end
+    end
+
+    Thread.pass until th.stop?
+    mutex.unlock
+
+    pid = Process.fork do
+      exit(mutex.locked?)
+    end
+
+    th.kill
+
+    pid, status = Process.waitpid2(pid)
+    assert_equal(false, status.success?, bug8433)
+  end if Process.respond_to?(:fork)
 end

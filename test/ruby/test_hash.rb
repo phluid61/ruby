@@ -6,8 +6,8 @@ require_relative 'envutil'
 class TestHash < Test::Unit::TestCase
 
   def test_hash
-    x = {1=>2, 2=>4, 3=>6}
-    y = {1=>2, 2=>4, 3=>6} # y = {1, 2, 2, 4, 3, 6} # 1.9 doesn't support
+    x = @cls[1=>2, 2=>4, 3=>6]
+    y = @cls[1=>2, 2=>4, 3=>6] # y = {1, 2, 2, 4, 3, 6} # 1.9 doesn't support
 
     assert_equal(2, x[1])
 
@@ -99,12 +99,18 @@ class TestHash < Test::Unit::TestCase
         super(Object.new)
       end
     }.new
-    assert_raises(TypeError) { h.dup }
+    assert_raise(TypeError) { h.dup }
+  end
+
+  def test_clear_initialize_copy
+    h = @cls[1=>2]
+    h.instance_eval {initialize_copy({})}
+    assert_empty(h)
   end
 
   def test_dup_will_rehash
-    set1 = { }
-    set2 = { set1 => true}
+    set1 = @cls[]
+    set2 = @cls[set1 => true]
 
     set1[set1] = true
 
@@ -203,6 +209,13 @@ class TestHash < Test::Unit::TestCase
     assert_equal(256,     h[z])
   end
 
+  def test_NEWHASH_fstring_key
+    a = {"ABC" => :t}
+    b = {"ABC" => :t}
+    assert_same a.keys[0], b.keys[0]
+    assert_same "ABC".freeze, a.keys[0]
+  end
+
   def test_EQUAL # '=='
     h1 = @cls[ "a" => 1, "c" => 2 ]
     h2 = @cls[ "a" => 1, "c" => 2, 7 => 35 ]
@@ -226,20 +239,16 @@ class TestHash < Test::Unit::TestCase
 
   def test_clone
     for taint in [ false, true ]
-      for untrust in [ false, true ]
-        for frozen in [ false, true ]
-          a = @h.clone
-          a.taint  if taint
-          a.untrust if untrust
-          a.freeze if frozen
-          b = a.clone
+      for frozen in [ false, true ]
+        a = @h.clone
+        a.taint  if taint
+        a.freeze if frozen
+        b = a.clone
 
-          assert_equal(a, b)
-          assert_not_same(a, b)
-          assert_equal(a.frozen?, b.frozen?)
-          assert_equal(a.untrusted?, b.untrusted?)
-          assert_equal(a.tainted?, b.tainted?)
-        end
+        assert_equal(a, b)
+        assert_not_same(a, b)
+        assert_equal(a.frozen?, b.frozen?)
+        assert_equal(a.tainted?, b.tainted?)
       end
     end
   end
@@ -311,35 +320,32 @@ class TestHash < Test::Unit::TestCase
   end
 
   def test_keep_if
-    h = {1=>2,3=>4,5=>6}
+    h = @cls[1=>2,3=>4,5=>6]
     assert_equal({3=>4,5=>6}, h.keep_if {|k, v| k + v >= 7 })
-    h = {1=>2,3=>4,5=>6}
+    h = @cls[1=>2,3=>4,5=>6]
     assert_equal({1=>2,3=>4,5=>6}, h.keep_if{true})
   end
 
   def test_dup
     for taint in [ false, true ]
-      for untrust in [ false, true ]
-        for frozen in [ false, true ]
-          a = @h.dup
-          a.taint  if taint
-          a.freeze if frozen
-          b = a.dup
+      for frozen in [ false, true ]
+        a = @h.dup
+        a.taint  if taint
+        a.freeze if frozen
+        b = a.dup
 
-          assert_equal(a, b)
-          assert_not_same(a, b)
-          assert_equal(false, b.frozen?)
-          assert_equal(a.tainted?, b.tainted?)
-          assert_equal(a.untrusted?, b.untrusted?)
-        end
+        assert_equal(a, b)
+        assert_not_same(a, b)
+        assert_equal(false, b.frozen?)
+        assert_equal(a.tainted?, b.tainted?)
       end
     end
   end
 
   def test_dup_equality
-    h = {'k' => 'v'}
+    h = @cls['k' => 'v']
     assert_equal(h, h.dup)
-    h1 = {h => 1}
+    h1 = @cls[h => 1]
     assert_equal(h1, h1.dup)
     h[1] = 2
     assert_equal(h1, h1.dup)
@@ -355,6 +361,11 @@ class TestHash < Test::Unit::TestCase
       assert_equal(v, h.delete(k))
     end
     assert_equal(@cls[], h)
+
+    h = @cls[]
+    h[1] = 1
+    h[2] = 2
+    assert_equal([[1,1],[2,2]], h.each.to_a)
   end
 
   def test_each_key
@@ -544,6 +555,8 @@ class TestHash < Test::Unit::TestCase
 
     assert_equal(h3, h.reject {|k,v| v })
     assert_equal(base, h)
+
+    assert_predicate(h.taint.reject {true}, :tainted?)
   end
 
   def test_reject!
@@ -577,6 +590,16 @@ class TestHash < Test::Unit::TestCase
     assert_equal(6, h[7])
     assert_nil(h[1])
     assert_nil(h[2])
+  end
+
+  def test_replace_bug9230
+    h = @cls[]
+    h.replace(@cls[])
+    assert_empty h
+
+    h = @cls[]
+    h.replace(@cls[].compare_by_identity)
+    assert_predicate(h, :compare_by_identity?)
   end
 
   def test_shift
@@ -651,10 +674,8 @@ class TestHash < Test::Unit::TestCase
 
     h = @cls[ 1=>2, 3=>4, 5=>6 ]
     h.taint
-    h.untrust
     a = h.to_a
     assert_equal(true, a.tainted?)
-    assert_equal(true, a.untrusted?)
   end
 
   def test_to_hash
@@ -722,16 +743,6 @@ class TestHash < Test::Unit::TestCase
     assert_equal([], expected - vals)
   end
 
-  def test_security_check
-    h = {}
-    assert_raise(SecurityError) do
-      Thread.new do
-        $SAFE = 4
-        h[1] = 1
-      end.join
-    end
-  end
-
   def test_intialize_wrong_arguments
     assert_raise(ArgumentError) do
       Hash.new(0) { }
@@ -739,22 +750,22 @@ class TestHash < Test::Unit::TestCase
   end
 
   def test_create
-    assert_equal({1=>2, 3=>4}, Hash[[[1,2],[3,4]]])
+    assert_equal({1=>2, 3=>4}, @cls[[[1,2],[3,4]]])
     assert_raise(ArgumentError) { Hash[0, 1, 2] }
-    assert_warning(/wrong element type Fixnum at 1 /) {Hash[[[1, 2], 3]]}
+    assert_warning(/wrong element type Fixnum at 1 /) {@cls[[[1, 2], 3]]}
     bug5406 = '[ruby-core:39945]'
-    assert_raise(ArgumentError, bug5406) { Hash[[[1, 2], [3, 4, 5]]] }
-    assert_equal({1=>2, 3=>4}, Hash[1,2,3,4])
+    assert_raise(ArgumentError, bug5406) { @cls[[[1, 2], [3, 4, 5]]] }
+    assert_equal({1=>2, 3=>4}, @cls[1,2,3,4])
     o = Object.new
     def o.to_hash() {1=>2} end
-    assert_equal({1=>2}, Hash[o], "[ruby-dev:34555]")
+    assert_equal({1=>2}, @cls[o], "[ruby-dev:34555]")
   end
 
   def test_rehash2
-    h = {1 => 2, 3 => 4}
+    h = @cls[1 => 2, 3 => 4]
     assert_equal(h.dup, h.rehash)
     assert_raise(RuntimeError) { h.each { h.rehash } }
-    assert_equal({}, {}.rehash)
+    assert_equal({}, @cls[].rehash)
   end
 
   def test_fetch2
@@ -762,35 +773,35 @@ class TestHash < Test::Unit::TestCase
   end
 
   def test_default_proc
-    h = Hash.new {|hh, k| hh + k + "baz" }
+    h = @cls.new {|hh, k| hh + k + "baz" }
     assert_equal("foobarbaz", h.default_proc.call("foo", "bar"))
     assert_nil(h.default_proc = nil)
     assert_nil(h.default_proc)
     h.default_proc = ->(h, k){ true }
     assert(h[:nope])
-    h = {}
+    h = @cls[]
     assert_nil(h.default_proc)
   end
 
   def test_shift2
-    h = Hash.new {|hh, k| :foo }
+    h = @cls.new {|hh, k| :foo }
     h[1] = 2
     assert_equal([1, 2], h.shift)
     assert_equal(:foo, h.shift)
     assert_equal(:foo, h.shift)
 
-    h = Hash.new(:foo)
+    h = @cls.new(:foo)
     h[1] = 2
     assert_equal([1, 2], h.shift)
     assert_equal(:foo, h.shift)
     assert_equal(:foo, h.shift)
 
-    h = {1=>2}
+    h =@cls[1=>2]
     h.each { assert_equal([1, 2], h.shift) }
   end
 
   def test_shift_none
-    h = Hash.new {|hh, k| "foo"}
+    h = @cls.new {|hh, k| "foo"}
     def h.default(k = nil)
       super.upcase
     end
@@ -798,33 +809,33 @@ class TestHash < Test::Unit::TestCase
   end
 
   def test_reject_bang2
-    assert_equal({1=>2}, {1=>2,3=>4}.reject! {|k, v| k + v == 7 })
-    assert_nil({1=>2,3=>4}.reject! {|k, v| k == 5 })
-    assert_nil({}.reject! { })
+    assert_equal({1=>2}, @cls[1=>2,3=>4].reject! {|k, v| k + v == 7 })
+    assert_nil(@cls[1=>2,3=>4].reject! {|k, v| k == 5 })
+    assert_nil(@cls[].reject! { })
   end
 
   def test_select
-    assert_equal({3=>4,5=>6}, {1=>2,3=>4,5=>6}.select {|k, v| k + v >= 7 })
+    assert_equal({3=>4,5=>6}, @cls[1=>2,3=>4,5=>6].select {|k, v| k + v >= 7 })
   end
 
   def test_select!
-    h = {1=>2,3=>4,5=>6}
+    h = @cls[1=>2,3=>4,5=>6]
     assert_equal(h, h.select! {|k, v| k + v >= 7 })
     assert_equal({3=>4,5=>6}, h)
-    h = {1=>2,3=>4,5=>6}
+    h = @cls[1=>2,3=>4,5=>6]
     assert_equal(nil, h.select!{true})
   end
 
   def test_clear2
-    assert_equal({}, {1=>2,3=>4,5=>6}.clear)
-    h = {1=>2,3=>4,5=>6}
+    assert_equal({}, @cls[1=>2,3=>4,5=>6].clear)
+    h = @cls[1=>2,3=>4,5=>6]
     h.each { h.clear }
     assert_equal({}, h)
   end
 
   def test_replace2
-    h1 = Hash.new { :foo }
-    h2 = {}
+    h1 = @cls.new { :foo }
+    h2 = @cls.new
     h2.replace h1
     assert_equal(:foo, h2[0])
 
@@ -837,71 +848,91 @@ class TestHash < Test::Unit::TestCase
   end
 
   def test_size2
-    assert_equal(0, {}.size)
+    assert_equal(0, @cls[].size)
   end
 
   def test_equal2
-    assert_not_equal(0, {})
+    assert_not_equal(0, @cls[])
     o = Object.new
-    def o.to_hash; {}; end
+    o.instance_variable_set(:@cls, @cls)
+    def o.to_hash; @cls[]; end
     def o.==(x); true; end
     assert_equal({}, o)
     def o.==(x); false; end
     assert_not_equal({}, o)
 
-    h1 = {1=>2}; h2 = {3=>4}
+    h1 = @cls[1=>2]; h2 = @cls[3=>4]
     assert_not_equal(h1, h2)
-    h1 = {1=>2}; h2 = {1=>4}
+    h1 = @cls[1=>2]; h2 = @cls[1=>4]
     assert_not_equal(h1, h2)
   end
 
   def test_eql
-    assert_not_send([{}, :eql?, 0])
+    assert_not_send([@cls[], :eql?, 0])
     o = Object.new
-    def o.to_hash; {}; end
+    o.instance_variable_set(:@cls, @cls)
+    def o.to_hash; @cls[]; end
     def o.eql?(x); true; end
-    assert_send([{}, :eql?, o])
+    assert_send([@cls[], :eql?, o])
     def o.eql?(x); false; end
-    assert_not_send([{}, :eql?, o])
+    assert_not_send([@cls[], :eql?, o])
   end
 
   def test_hash2
-    assert_kind_of(Integer, {}.hash)
-    h = {1=>2}
+    assert_kind_of(Integer, @cls[].hash)
+    h = @cls[1=>2]
     h.shift
     assert_equal({}.hash, h.hash, '[ruby-core:38650]')
   end
 
   def test_update2
-    h1 = {1=>2, 3=>4}
+    h1 = @cls[1=>2, 3=>4]
     h2 = {1=>3, 5=>7}
     h1.update(h2) {|k, v1, v2| k + v1 + v2 }
     assert_equal({1=>6, 3=>4, 5=>7}, h1)
   end
 
   def test_merge
-    h1 = {1=>2, 3=>4}
+    h1 = @cls[1=>2, 3=>4]
     h2 = {1=>3, 5=>7}
     assert_equal({1=>3, 3=>4, 5=>7}, h1.merge(h2))
     assert_equal({1=>6, 3=>4, 5=>7}, h1.merge(h2) {|k, v1, v2| k + v1 + v2 })
   end
 
   def test_assoc
-    assert_equal([3,4], {1=>2, 3=>4, 5=>6}.assoc(3))
-    assert_nil({1=>2, 3=>4, 5=>6}.assoc(4))
+    assert_equal([3,4], @cls[1=>2, 3=>4, 5=>6].assoc(3))
+    assert_nil(@cls[1=>2, 3=>4, 5=>6].assoc(4))
+    assert_equal([1.0,1], @cls[1.0=>1].assoc(1))
+  end
+
+  def test_assoc_compare_by_identity
+    h = @cls[]
+    h.compare_by_identity
+    h["a"] = 1
+    h["a"] = 2
+    assert_equal(["a",1], h.assoc("a"))
   end
 
   def test_rassoc
-    assert_equal([3,4], {1=>2, 3=>4, 5=>6}.rassoc(4))
+    assert_equal([3,4], @cls[1=>2, 3=>4, 5=>6].rassoc(4))
     assert_nil({1=>2, 3=>4, 5=>6}.rassoc(3))
   end
 
   def test_flatten
-    assert_equal([[1], [2]], {[1] => [2]}.flatten)
+    assert_equal([[1], [2]], @cls[[1] => [2]].flatten)
+
+    a =  @cls[1=> "one", 2 => [2,"two"], 3 => [3, ["three"]]]
+    assert_equal([1, "one", 2, [2, "two"], 3, [3, ["three"]]], a.flatten)
+    assert_equal([1, "one", 2, [2, "two"], 3, [3, ["three"]]], a.flatten(-1))
+    assert_equal([1, "one", 2, [2, "two"], 3, [3, ["three"]]], a.flatten(0))
+    assert_equal([1, "one", 2, [2, "two"], 3, [3, ["three"]]], a.flatten(1))
+    assert_equal([1, "one", 2, 2, "two", 3, 3, ["three"]], a.flatten(2))
+    assert_equal([1, "one", 2, 2, "two", 3, 3, "three"], a.flatten(3))
+    assert_raise(TypeError){ a.flatten(Object) }
   end
 
   def test_callcc
-    h = {1=>2}
+    h = @cls[1=>2]
     c = nil
     f = false
     h.each { callcc {|c2| c = c2 } }
@@ -911,7 +942,7 @@ class TestHash < Test::Unit::TestCase
     end
     assert_raise(RuntimeError) { h.each { h.rehash } }
 
-    h = {1=>2}
+    h = @cls[1=>2]
     c = nil
     assert_raise(RuntimeError) do
       h.each { callcc {|c2| c = c2 } }
@@ -920,15 +951,84 @@ class TestHash < Test::Unit::TestCase
     end
   end
 
+  def test_callcc_iter_level
+    bug9105 = '[ruby-dev:47803] [Bug #9105]'
+    h = @cls[1=>2, 3=>4]
+    c = nil
+    f = false
+    h.each {callcc {|c2| c = c2}}
+    unless f
+      f = true
+      c.call
+    end
+    assert_nothing_raised(RuntimeError, bug9105) do
+      h.each {|i, j|
+        h.delete(i);
+        assert_not_equal(false, i, bug9105)
+      }
+    end
+  end
+
+  def test_callcc_escape
+    bug9105 = '[ruby-dev:47803] [Bug #9105]'
+    assert_nothing_raised(RuntimeError, bug9105) do
+      h=@cls[]
+      cnt=0
+      c = callcc {|c|c}
+      h[cnt] = true
+      h.each{|i|
+        cnt+=1
+        c.call if cnt == 1
+      }
+    end
+  end
+
+  def test_callcc_reenter
+    bug9105 = '[ruby-dev:47803] [Bug #9105]'
+    assert_nothing_raised(RuntimeError, bug9105) do
+      h = @cls[1=>2,3=>4]
+      c = nil
+      f = false
+      h.each { |i|
+        callcc {|c2| c = c2 } unless c
+        h.delete(1) if f
+      }
+      unless f
+        f = true
+        c.call
+      end
+    end
+  end
+
+  def test_threaded_iter_level
+    bug9105 = '[ruby-dev:47807] [Bug #9105]'
+    h = @cls[1=>2]
+    2.times.map {
+      f = false
+      th = Thread.start {h.each {f = true; sleep}}
+      Thread.pass until f
+      Thread.pass until th.stop?
+      th
+    }.each {|th| th.run; th.join}
+    assert_nothing_raised(RuntimeError, bug9105) do
+      h[5] = 6
+    end
+    assert_equal(6, h[5], bug9105)
+  end
+
   def test_compare_by_identity
     a = "foo"
-    assert_not_predicate({}, :compare_by_identity?)
-    h = { a => "bar" }
+    assert_not_predicate(@cls[], :compare_by_identity?)
+    h = @cls[a => "bar"]
     assert_not_predicate(h, :compare_by_identity?)
     h.compare_by_identity
     assert_predicate(h, :compare_by_identity?)
     #assert_equal("bar", h[a])
     assert_nil(h["foo"])
+
+    bug8703 = '[ruby-core:56256] [Bug #8703] copied identhash'
+    h.clear
+    assert_predicate(h.dup, :compare_by_identity?, bug8703)
   end
 
   class ObjWithHash
@@ -944,29 +1044,29 @@ class TestHash < Test::Unit::TestCase
   end
 
   def test_hash_hash
-    assert_equal({0=>2,11=>1}.hash, {11=>1,0=>2}.hash)
+    assert_equal({0=>2,11=>1}.hash, @cls[11=>1,0=>2].hash)
     o1 = ObjWithHash.new(0,1)
     o2 = ObjWithHash.new(11,1)
-    assert_equal({o1=>1,o2=>2}.hash, {o2=>2,o1=>1}.hash)
+    assert_equal({o1=>1,o2=>2}.hash, @cls[o2=>2,o1=>1].hash)
   end
 
   def test_hash_bignum_hash
     x = 2<<(32-3)-1
-    assert_equal({x=>1}.hash, {x=>1}.hash)
+    assert_equal({x=>1}.hash, @cls[x=>1].hash)
     x = 2<<(64-3)-1
-    assert_equal({x=>1}.hash, {x=>1}.hash)
+    assert_equal({x=>1}.hash, @cls[x=>1].hash)
 
     o = Object.new
     def o.hash; 2 << 100; end
-    assert_equal({x=>1}.hash, {x=>1}.hash)
+    assert_equal({o=>1}.hash, @cls[o=>1].hash)
   end
 
   def test_hash_poped
-    assert_nothing_raised { eval("a = 1; {a => a}; a") }
+    assert_nothing_raised { eval("a = 1; @cls[a => a]; a") }
   end
 
   def test_recursive_key
-    h = {}
+    h = @cls[]
     assert_nothing_raised { h[h] = :foo }
     h.rehash
     assert_equal(:foo, h[h])
@@ -974,9 +1074,108 @@ class TestHash < Test::Unit::TestCase
 
   def test_inverse_hash
     feature4262 = '[ruby-core:34334]'
-    [{1=>2}, {123=>"abc"}].each do |h|
+    [@cls[1=>2], @cls[123=>"abc"]].each do |h|
       assert_not_equal(h.hash, h.invert.hash, feature4262)
     end
+  end
+
+  def test_recursive_hash_value_struct
+    bug9151 = '[ruby-core:58567] [Bug #9151]'
+
+    s = Struct.new(:x) {def hash; [x,""].hash; end}
+    a = s.new
+    b = s.new
+    a.x = b
+    b.x = a
+    assert_nothing_raised(SystemStackError, bug9151) {a.hash}
+    assert_nothing_raised(SystemStackError, bug9151) {b.hash}
+
+    h = @cls[]
+    h[[a,"hello"]] = 1
+    assert_equal(1, h.size)
+    h[[b,"world"]] = 2
+    assert_equal(2, h.size)
+
+    obj = Object.new
+    h = @cls[a => obj]
+    assert_same(obj, h[b])
+  end
+
+  def test_recursive_hash_value_array
+    h = @cls[]
+    h[[[1]]] = 1
+    assert_equal(1, h.size)
+    h[[[2]]] = 1
+    assert_equal(2, h.size)
+
+    a = []
+    a << a
+
+    h = @cls[]
+    h[[a, 1]] = 1
+    assert_equal(1, h.size)
+    h[[a, 2]] = 2
+    assert_equal(2, h.size)
+    h[[a, a]] = 3
+    assert_equal(3, h.size)
+
+    obj = Object.new
+    h = @cls[a => obj]
+    assert_same(obj, h[[[a]]])
+  end
+
+  def test_recursive_hash_value_array_hash
+    h = @cls[]
+    rec = [h]
+    h[:x] = rec
+
+    obj = Object.new
+    h2 = {rec => obj}
+    [h, {x: rec}].each do |k|
+      k = [k]
+      assert_same(obj, h2[k], ->{k.inspect})
+    end
+  end
+
+  def test_recursive_hash_value_hash_array
+    h = @cls[]
+    rec = [h]
+    h[:x] = rec
+
+    obj = Object.new
+    h2 = {h => obj}
+    [rec, [h]].each do |k|
+      k = {x: k}
+      assert_same(obj, h2[k], ->{k.inspect})
+    end
+  end
+
+  def test_exception_in_rehash
+    bug9187 = '[ruby-core:58728] [Bug #9187]'
+
+    prepare = <<-EOS
+    class Foo
+      def initialize
+        @raise = false
+      end
+
+      def hash
+        raise if @raise
+        @raise = true
+        return 0
+      end
+    end
+    EOS
+
+    code = <<-EOS
+    h = {Foo.new => true}
+    10_0000.times do
+      h.rehash rescue nil
+    end
+    GC.start
+    EOS
+
+    assert_no_memory_leak([], prepare, code, bug9187)
   end
 
   class TestSubHash < TestHash

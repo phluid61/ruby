@@ -166,7 +166,6 @@ udp_send(int argc, VALUE *argv, VALUE sock)
     if (argc == 2 || argc == 3) {
 	return rsock_bsock_send(argc, argv, sock);
     }
-    rb_secure(4);
     rb_scan_args(argc, argv, "4", &arg.mesg, &flags, &host, &port);
 
     StringValue(arg.mesg);
@@ -195,8 +194,8 @@ udp_send(int argc, VALUE *argv, VALUE sock)
 
 /*
  * call-seq:
- * 	udpsocket.recvfrom_nonblock(maxlen) => [mesg, sender_inet_addr]
- * 	udpsocket.recvfrom_nonblock(maxlen, flags) => [mesg, sender_inet_addr]
+ *   udpsocket.recvfrom_nonblock(maxlen) => [mesg, sender_inet_addr]
+ *   udpsocket.recvfrom_nonblock(maxlen, flags) => [mesg, sender_inet_addr]
  *
  * Receives up to _maxlen_ bytes from +udpsocket+ using recvfrom(2) after
  * O_NONBLOCK is set for the underlying file descriptor.

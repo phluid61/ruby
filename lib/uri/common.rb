@@ -74,7 +74,7 @@ module URI
     # The constructor accepts a hash as options for parser.
     # Keys of options are pattern names of URI components
     # and values of options are pattern strings.
-    # The constructor generetes set of regexps for parsing URIs.
+    # The constructor generates set of regexps for parsing URIs.
     #
     # You can use the following keys:
     #
@@ -899,7 +899,7 @@ module URI
   # See URI.encode_www_form_component, URI.decode_www_form
   def self.decode_www_form_component(str, enc=Encoding::UTF_8)
     raise ArgumentError, "invalid %-encoding (#{str})" unless /\A[^%]*(?:%\h\h[^%]*)*\z/ =~ str
-    str.gsub(/\+|%\h\h/, TBLDECWWWCOMP_).force_encoding(enc)
+    str.b.gsub(/\+|%\h\h/, TBLDECWWWCOMP_).force_encoding(enc)
   end
 
   # Generate URL-encoded form data from given +enum+.

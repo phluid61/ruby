@@ -506,7 +506,6 @@ fgdbm_values_at(int argc, VALUE *argv, VALUE obj)
 static void
 rb_gdbm_modify(VALUE obj)
 {
-    rb_secure(4);
     if (OBJ_FROZEN(obj)) rb_error_frozen("GDBM");
 }
 
@@ -725,7 +724,7 @@ fgdbm_store(VALUE obj, VALUE keystr, VALUE valstr)
 }
 
 static VALUE
-update_i(VALUE pair, VALUE dbm)
+update_i(RB_BLOCK_CALL_FUNC_ARGLIST(pair, dbm))
 {
     Check_Type(pair, T_ARRAY);
     if (RARRAY_LEN(pair) < 2) {

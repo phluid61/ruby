@@ -763,10 +763,12 @@ EOT
            assert_equal(eucjp, r.read)
          end)
 
-    e = assert_raise(ArgumentError) {with_pipe("UTF-8", "UTF-8".encode("UTF-32BE")) {}}
-    assert_match(/invalid name encoding/, e.message)
-    e = assert_raise(ArgumentError) {with_pipe("UTF-8".encode("UTF-32BE")) {}}
-    assert_match(/invalid name encoding/, e.message)
+    assert_raise_with_message(ArgumentError, /invalid name encoding/) do
+      with_pipe("UTF-8", "UTF-8".encode("UTF-32BE")) {}
+    end
+    assert_raise_with_message(ArgumentError, /invalid name encoding/) do
+      with_pipe("UTF-8".encode("UTF-32BE")) {}
+    end
 
     ENCS.each {|enc|
       pipe(enc,
@@ -2196,7 +2198,17 @@ EOT
       open("a", "wb") {|f| f.puts "a"}
       open("a", "rt") {|f| f.getc}
     }
-    assert(c.ascii_only?, "should be ascii_only #{bug4557}")
+    assert_predicate(c, :ascii_only?, bug4557)
+  end
+
+  def test_getc_conversion
+    bug8516 = '[ruby-core:55444] [Bug #8516]'
+    c = with_tmpdir {
+      open("a", "wb") {|f| f.putc "\xe1"}
+      open("a", "r:iso-8859-1:utf-8") {|f| f.getc}
+    }
+    assert_not_predicate(c, :ascii_only?, bug8516)
+    assert_equal(1, c.size, bug8516)
   end
 
   def test_default_mode_on_dosish

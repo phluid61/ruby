@@ -60,7 +60,6 @@ etc_getlogin(VALUE obj)
 {
     char *login;
 
-    rb_secure(4);
 #ifdef HAVE_GETLOGIN
     login = getlogin();
     if (!login) login = getenv("USER");
@@ -80,6 +79,20 @@ safe_setup_str(const char *str)
     if (str == 0) str = "";
     return rb_tainted_str_new2(str);
 }
+
+static VALUE
+safe_setup_locale_str(const char *str)
+{
+    if (str == 0) str = "";
+    return rb_locale_str_new_cstr(str);
+}
+
+static VALUE
+safe_setup_filesystem_str(const char *str)
+{
+    if (str == 0) str = "";
+    return rb_filesystem_str_new_cstr(str);
+}
 #endif
 
 #ifdef HAVE_GETPWENT
@@ -88,17 +101,17 @@ setup_passwd(struct passwd *pwd)
 {
     if (pwd == 0) rb_sys_fail("/etc/passwd");
     return rb_struct_new(sPasswd,
-			 safe_setup_str(pwd->pw_name),
+			 safe_setup_locale_str(pwd->pw_name),
 #ifdef HAVE_STRUCT_PASSWD_PW_PASSWD
 			 safe_setup_str(pwd->pw_passwd),
 #endif
 			 UIDT2NUM(pwd->pw_uid),
 			 GIDT2NUM(pwd->pw_gid),
 #ifdef HAVE_STRUCT_PASSWD_PW_GECOS
-			 safe_setup_str(pwd->pw_gecos),
+			 safe_setup_locale_str(pwd->pw_gecos),
 #endif
-			 safe_setup_str(pwd->pw_dir),
-			 safe_setup_str(pwd->pw_shell),
+			 safe_setup_filesystem_str(pwd->pw_dir),
+			 safe_setup_filesystem_str(pwd->pw_shell),
 #ifdef HAVE_STRUCT_PASSWD_PW_CHANGE
 			 INT2NUM(pwd->pw_change),
 #endif
@@ -109,10 +122,10 @@ setup_passwd(struct passwd *pwd)
 			 PW_AGE2VAL(pwd->pw_age),
 #endif
 #ifdef HAVE_STRUCT_PASSWD_PW_CLASS
-			 safe_setup_str(pwd->pw_class),
+			 safe_setup_locale_str(pwd->pw_class),
 #endif
 #ifdef HAVE_STRUCT_PASSWD_PW_COMMENT
-			 safe_setup_str(pwd->pw_comment),
+			 safe_setup_locale_str(pwd->pw_comment),
 #endif
 #ifdef HAVE_STRUCT_PASSWD_PW_EXPIRE
 			 INT2NUM(pwd->pw_expire),
@@ -147,7 +160,6 @@ etc_getpwuid(int argc, VALUE *argv, VALUE obj)
     rb_uid_t uid;
     struct passwd *pwd;
 
-    rb_secure(4);
     if (rb_scan_args(argc, argv, "01", &id) == 1) {
 	uid = NUM2UIDT(id);
     }
@@ -185,7 +197,7 @@ etc_getpwnam(VALUE obj, VALUE nam)
 
     SafeStringValue(nam);
     pwd = getpwnam(RSTRING_PTR(nam));
-    if (pwd == 0) rb_raise(rb_eArgError, "can't find user for %s", RSTRING_PTR(nam));
+    if (pwd == 0) rb_raise(rb_eArgError, "can't find user for %"PRIsVALUE, nam);
     return setup_passwd(pwd);
 #else
     return Qnil;
@@ -251,7 +263,6 @@ etc_passwd(VALUE obj)
 #ifdef HAVE_GETPWENT
     struct passwd *pw;
 
-    rb_secure(4);
     if (rb_block_given_p()) {
 	each_passwd();
     }
@@ -354,11 +365,11 @@ setup_group(struct group *grp)
     mem = rb_ary_new();
     tbl = grp->gr_mem;
     while (*tbl) {
-	rb_ary_push(mem, safe_setup_str(*tbl));
+	rb_ary_push(mem, safe_setup_locale_str(*tbl));
 	tbl++;
     }
     return rb_struct_new(sGroup,
-			 safe_setup_str(grp->gr_name),
+			 safe_setup_locale_str(grp->gr_name),
 #ifdef HAVE_STRUCT_GROUP_GR_PASSWD
 			 safe_setup_str(grp->gr_passwd),
 #endif
@@ -391,7 +402,6 @@ etc_getgrgid(int argc, VALUE *argv, VALUE obj)
     gid_t gid;
     struct group *grp;
 
-    rb_secure(4);
     if (rb_scan_args(argc, argv, "01", &id) == 1) {
 	gid = NUM2GIDT(id);
     }
@@ -428,10 +438,9 @@ etc_getgrnam(VALUE obj, VALUE nam)
 #ifdef HAVE_GETGRENT
     struct group *grp;
 
-    rb_secure(4);
     SafeStringValue(nam);
     grp = getgrnam(RSTRING_PTR(nam));
-    if (grp == 0) rb_raise(rb_eArgError, "can't find group for %s", RSTRING_PTR(nam));
+    if (grp == 0) rb_raise(rb_eArgError, "can't find group for %"PRIsVALUE, nam);
     return setup_group(grp);
 #else
     return Qnil;
@@ -494,7 +503,6 @@ etc_group(VALUE obj)
 #ifdef HAVE_GETGRENT
     struct group *grp;
 
-    rb_secure(4);
     if (rb_block_given_p()) {
 	each_group();
     }
@@ -624,7 +632,7 @@ etc_systmpdir(void)
 #else
     tmpdir = rb_filesystem_str_new_cstr("/tmp");
 #endif
-    FL_UNSET(tmpdir, FL_TAINT|FL_UNTRUSTED);
+    FL_UNSET(tmpdir, FL_TAINT);
     return tmpdir;
 }
 
@@ -678,31 +686,38 @@ Init_etc(void)
     rb_define_module_function(mEtc, "sysconfdir", etc_sysconfdir, 0);
     rb_define_module_function(mEtc, "systmpdir", etc_systmpdir, 0);
 
-    sPasswd =  rb_struct_define(NULL,
-				"name", "passwd", "uid", "gid",
-#ifdef HAVE_STRUCT_PASSWD_PW_GECOS
-				"gecos",
+    sPasswd =  rb_struct_define_under(mEtc, "Passwd",
+				      "name",
+#ifdef HAVE_STRUCT_PASSWD_PW_PASSWD
+				      "passwd",
 #endif
-				"dir", "shell",
+				      "uid",
+				      "gid",
+#ifdef HAVE_STRUCT_PASSWD_PW_GECOS
+				      "gecos",
+#endif
+				      "dir",
+				      "shell",
 #ifdef HAVE_STRUCT_PASSWD_PW_CHANGE
-				"change",
+				      "change",
 #endif
 #ifdef HAVE_STRUCT_PASSWD_PW_QUOTA
-				"quota",
+				      "quota",
 #endif
 #ifdef HAVE_STRUCT_PASSWD_PW_AGE
-				"age",
+				      "age",
 #endif
 #ifdef HAVE_STRUCT_PASSWD_PW_CLASS
-				"uclass",
+				      "uclass",
 #endif
 #ifdef HAVE_STRUCT_PASSWD_PW_COMMENT
-				"comment",
+				      "comment",
 #endif
 #ifdef HAVE_STRUCT_PASSWD_PW_EXPIRE
-				"expire",
+				      "expire",
 #endif
-				NULL);
+				      NULL);
+#if 0
     /* Define-const: Passwd
      *
      * Passwd is a Struct that contains the following members:
@@ -743,18 +758,19 @@ Init_etc(void)
      *	    account expiration time(integer) must be compiled with +HAVE_STRUCT_PASSWD_PW_EXPIRE+
      */
     rb_define_const(mEtc, "Passwd", sPasswd);
-    rb_set_class_path(sPasswd, mEtc, "Passwd");
+#endif
     rb_define_const(rb_cStruct, "Passwd", sPasswd); /* deprecated name */
     rb_extend_object(sPasswd, rb_mEnumerable);
     rb_define_singleton_method(sPasswd, "each", etc_each_passwd, 0);
 
 #ifdef HAVE_GETGRENT
-    sGroup = rb_struct_define(NULL, "name",
+    sGroup = rb_struct_define_under(mEtc, "Group", "name",
 #ifdef HAVE_STRUCT_GROUP_GR_PASSWD
-			      "passwd",
+				    "passwd",
 #endif
-			      "gid", "mem", NULL);
+				    "gid", "mem", NULL);
 
+#if 0
     /* Define-const: Group
      *
      * Group is a Struct that is only available when compiled with +HAVE_GETGRENT+.
@@ -777,7 +793,7 @@ Init_etc(void)
      *	    members of the group.
      */
     rb_define_const(mEtc, "Group", sGroup);
-    rb_set_class_path(sGroup, mEtc, "Group");
+#endif
     rb_define_const(rb_cStruct, "Group", sGroup); /* deprecated name */
     rb_extend_object(sGroup, rb_mEnumerable);
     rb_define_singleton_method(sGroup, "each", etc_each_group, 0);

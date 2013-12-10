@@ -14,15 +14,24 @@
    1 - no dangerous operation by tainted value
    2 - process/file operations prohibited
    3 - all generated objects are tainted
-   4 - no global (non-tainted) variable modification/no direct output
 */
 
-#define SAFE_LEVEL_MAX 4
+#define SAFE_LEVEL_MAX RUBY_SAFE_LEVEL_MAX
 
 #include "ruby/ruby.h"
 #include "vm_core.h"
 
 /* $SAFE accessor */
+
+#undef rb_secure
+#undef rb_set_safe_level
+#undef ruby_safe_level_4_warning
+
+int
+ruby_safe_level_4_warning(void)
+{
+    return 4;
+}
 
 int
 rb_safe_level(void)
@@ -43,7 +52,7 @@ rb_set_safe_level(int level)
 
     if (level > th->safe_level) {
 	if (level > SAFE_LEVEL_MAX) {
-	    level = SAFE_LEVEL_MAX;
+	    rb_raise(rb_eArgError, "$SAFE=4 is obsolete");
 	}
 	th->safe_level = level;
     }
@@ -67,10 +76,10 @@ safe_setter(VALUE val)
 		 th->safe_level, level);
     }
     if (level == 3) {
-	rb_warning("$SAFE=3 does no sandboxing; you might want to use $SAFE=4");
+	rb_warning("$SAFE=3 does no sandboxing");
     }
     if (level > SAFE_LEVEL_MAX) {
-	level = SAFE_LEVEL_MAX;
+	rb_raise(rb_eArgError, "$SAFE=4 is obsolete");
     }
     th->safe_level = level;
 }
@@ -94,8 +103,6 @@ rb_secure(int level)
 void
 rb_secure_update(VALUE obj)
 {
-    if (!OBJ_TAINTED(obj))
-	rb_secure(4);
 }
 
 void
@@ -117,7 +124,6 @@ rb_check_safe_obj(VALUE x)
     if (rb_safe_level() > 0 && OBJ_TAINTED(x)) {
 	rb_insecure_operation();
     }
-    rb_secure(4);
 }
 
 void

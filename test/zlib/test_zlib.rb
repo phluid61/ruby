@@ -232,6 +232,12 @@ if defined? Zlib
   end
 
   class TestZlibInflate < Test::Unit::TestCase
+    def test_class_inflate_dictionary
+      assert_raises(Zlib::NeedDict) do
+        Zlib::Inflate.inflate([0x08,0x3C,0x0,0x0,0x0,0x0].pack("c*"))
+      end
+    end
+
     def test_initialize
       assert_raise(Zlib::StreamError) { Zlib::Inflate.new(-1) }
 
@@ -685,6 +691,7 @@ if defined? Zlib
     end
 
     def test_rewind
+      bug8467 = '[ruby-core:55220] [Bug #8467]'
       Tempfile.create("test_zlib_gzip_reader_rewind") {|t|
         t.close
         Zlib::GzipWriter.open(t.path) {|gz| gz.print("foo") }
@@ -693,6 +700,11 @@ if defined? Zlib
           assert_equal("foo", f.read)
           f.rewind
           assert_equal("foo", f.read)
+        end
+        open(t.path, "rb") do |f|
+          gz = Zlib::GzipReader.new(f)
+          gz.rewind
+          assert_equal(["foo"], gz.to_a, bug8467)
         end
       }
     end

@@ -42,7 +42,7 @@ static VALUE
 init_inetsock_internal(struct inetsock_arg *arg)
 {
     int type = arg->type;
-    struct addrinfo *res;
+    struct addrinfo *res, *lres;
     int fd, status = 0, local = 0;
     const char *syscall = 0;
 
@@ -62,6 +62,20 @@ init_inetsock_internal(struct inetsock_arg *arg)
 	if (res->ai_family == AF_INET6)
 	    continue;
 #endif
+        lres = NULL;
+        if (arg->local.res) {
+            for (lres = arg->local.res; lres; lres = lres->ai_next) {
+                if (lres->ai_family == res->ai_family)
+                    break;
+            }
+            if (!lres) {
+                if (res->ai_next || status < 0)
+                    continue;
+                /* Use a different family local address if no choice, this
+                 * will cause EAFNOSUPPORT. */
+                lres = arg->local.res;
+            }
+        }
 	status = rsock_socket(res->ai_family,res->ai_socktype,res->ai_protocol);
 	syscall = "socket(2)";
 	fd = status;
@@ -79,8 +93,8 @@ init_inetsock_internal(struct inetsock_arg *arg)
 	    syscall = "bind(2)";
 	}
 	else {
-	    if (arg->local.res) {
-		status = bind(fd, arg->local.res->ai_addr, arg->local.res->ai_addrlen);
+	    if (lres) {
+		status = bind(fd, lres->ai_addr, lres->ai_addrlen);
 		local = status;
 		syscall = "bind(2)";
 	    }

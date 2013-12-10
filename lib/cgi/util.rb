@@ -6,8 +6,8 @@ module CGI::Util
   #      # => "%27Stop%21%27+said+Fred"
   def escape(string)
     encoding = string.encoding
-    string.b.gsub(/([^ a-zA-Z0-9_.-]+)/) do
-      '%' + $1.unpack('H2' * $1.bytesize).join('%').upcase
+    string.b.gsub(/([^ a-zA-Z0-9_.-]+)/) do |m|
+      '%' + m.unpack('H2' * m.bytesize).join('%').upcase
     end.tr(' ', '+').force_encoding(encoding)
   end
 
@@ -15,8 +15,8 @@ module CGI::Util
   #   string = CGI::unescape("%27Stop%21%27+said+Fred")
   #      # => "'Stop!' said Fred"
   def unescape(string,encoding=@@accept_charset)
-    str=string.tr('+', ' ').force_encoding(Encoding::ASCII_8BIT).gsub(/((?:%[0-9a-fA-F]{2})+)/) do
-      [$1.delete('%')].pack('H*')
+    str=string.tr('+', ' ').b.gsub(/((?:%[0-9a-fA-F]{2})+)/) do |m|
+      [m.delete('%')].pack('H*')
     end.force_encoding(encoding)
     str.valid_encoding? ? str : str.force_encoding(string.encoding)
   end
@@ -41,8 +41,9 @@ module CGI::Util
   #   CGI::unescapeHTML("Usage: foo &quot;bar&quot; &lt;baz&gt;")
   #      # => "Usage: foo \"bar\" <baz>"
   def unescapeHTML(string)
+    return string unless string.include? '&'
     enc = string.encoding
-    if [Encoding::UTF_16BE, Encoding::UTF_16LE, Encoding::UTF_32BE, Encoding::UTF_32LE].include?(enc)
+    if enc != Encoding::UTF_8 && [Encoding::UTF_16BE, Encoding::UTF_16LE, Encoding::UTF_32BE, Encoding::UTF_32LE].include?(enc)
       return string.gsub(Regexp.new('&(apos|amp|quot|gt|lt|#[0-9]+|#x[0-9A-Fa-f]+);'.encode(enc))) do
         case $1.encode(Encoding::US_ASCII)
         when 'apos'                then "'".encode(enc)

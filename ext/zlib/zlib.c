@@ -1074,11 +1074,13 @@ loop:
 	}
 	if (err == Z_NEED_DICT) {
 	    VALUE self = (VALUE)z->stream.opaque;
-	    VALUE dicts = rb_ivar_get(self, id_dictionaries);
-	    VALUE dict = rb_hash_aref(dicts, rb_uint2inum(z->stream.adler));
-	    if (!NIL_P(dict)) {
-		rb_inflate_set_dictionary(self, dict);
-		goto loop;
+	    if (self) {
+		VALUE dicts = rb_ivar_get(self, id_dictionaries);
+		VALUE dict = rb_hash_aref(dicts, rb_uint2inum(z->stream.adler));
+		if (!NIL_P(dict)) {
+		    rb_inflate_set_dictionary(self, dict);
+		    goto loop;
+		}
 	    }
 	}
 	raise_zlib_error(err, z->stream.msg);
@@ -2709,7 +2711,7 @@ gzfile_read(struct gzfile *gz, long len)
     if (len == 0) return rb_str_new(0, 0);
     if (len < 0) return Qnil;
     dst = zstream_shift_buffer(&gz->z, len);
-    gzfile_calc_crc(gz, dst);
+    if (!NIL_P(dst)) gzfile_calc_crc(gz, dst);
     return dst;
 }
 
@@ -2772,6 +2774,7 @@ gzfile_read_all(struct gzfile *gz)
     }
 
     dst = zstream_detach_buffer(&gz->z);
+    if (NIL_P(dst)) return dst;
     gzfile_calc_crc(gz, dst);
     OBJ_TAINT(dst);
     return gzfile_newstr(gz, dst);
@@ -2818,6 +2821,7 @@ gzfile_getc(struct gzfile *gz)
 	buf = gz->z.buf;
 	len = rb_enc_mbclen(RSTRING_PTR(buf), RSTRING_END(buf), gz->enc);
 	dst = gzfile_read(gz, len);
+	if (NIL_P(dst)) return dst;
 	return gzfile_newstr(gz, dst);
     }
 }
@@ -4039,6 +4043,7 @@ gzreader_gets(int argc, VALUE *argv, VALUE obj)
 		n = limit;
 	    }
 	    dst = zstream_shift_buffer(&gz->z, n);
+	    if (NIL_P(dst)) return dst;
 	    gzfile_calc_crc(gz, dst);
 	    dst = gzfile_newstr(gz, dst);
 	}
@@ -4100,6 +4105,7 @@ gzreader_gets(int argc, VALUE *argv, VALUE obj)
 
     gz->lineno++;
     dst = gzfile_read(gz, n);
+    if (NIL_P(dst)) return dst;
     if (rspara) {
 	gzreader_skip_linebreaks(gz);
     }

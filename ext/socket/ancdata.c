@@ -276,8 +276,8 @@ ancillary_unix_rights(VALUE self)
  * returns the timestamp as a time object.
  *
  * _ancillarydata_ should be one of following type:
- * - SOL_SOCKET/SCM_TIMESTAMP (micro second) GNU/Linux, FreeBSD, NetBSD, OpenBSD, Solaris, MacOS X
- * - SOL_SOCKET/SCM_TIMESTAMPNS (nano second) GNU/Linux
+ * - SOL_SOCKET/SCM_TIMESTAMP (microsecond) GNU/Linux, FreeBSD, NetBSD, OpenBSD, Solaris, MacOS X
+ * - SOL_SOCKET/SCM_TIMESTAMPNS (nanosecond) GNU/Linux
  * - SOL_SOCKET/SCM_BINTIME (2**(-64) second) FreeBSD
  *
  *   Addrinfo.udp("127.0.0.1", 0).bind {|s1|
@@ -1140,7 +1140,6 @@ bsock_sendmsg_internal(int argc, VALUE *argv, VALUE sock, int nonblock)
     int flags;
     ssize_t ss;
 
-    rb_secure(4);
     GetOpenFile(sock, fptr);
 #if defined(HAVE_STRUCT_MSGHDR_MSG_CONTROL)
     family = rsock_getfamily(fptr->fd);
@@ -1504,7 +1503,6 @@ bsock_recvmsg_internal(int argc, VALUE *argv, VALUE sock, int nonblock)
     int gc_done = 0;
 #endif
 
-    rb_secure(4);
 
     rb_scan_args(argc, argv, "03:", &vmaxdatlen, &vflags, &vmaxctllen, &vopts);
 

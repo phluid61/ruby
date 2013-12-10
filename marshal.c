@@ -42,7 +42,7 @@ shortlen(long len, BDIGIT *ds)
 	num = SHORTDN(num);
 	offset++;
     }
-    return (len - 1)*sizeof(BDIGIT)/2 + offset;
+    return (len - 1)*SIZEOF_BDIGITS/2 + offset;
 }
 #define SHORTLEN(x) shortlen((x),d)
 #endif
@@ -130,7 +130,7 @@ rb_marshal_define_compat(VALUE newclass, VALUE oldclass, VALUE (*dumper)(VALUE),
     st_insert(compat_allocator_tbl, (st_data_t)allocator, (st_data_t)compat);
 }
 
-#define MARSHAL_INFECTION (FL_TAINT|FL_UNTRUSTED)
+#define MARSHAL_INFECTION FL_TAINT
 typedef char ruby_check_marshal_viral_flags[MARSHAL_INFECTION == (int)MARSHAL_INFECTION ? 1 : -1];
 
 struct dump_arg {
@@ -186,6 +186,7 @@ memsize_dump_arg(const void *ptr)
 static const rb_data_type_t dump_arg_data = {
     "dump_arg",
     {mark_dump_arg, free_dump_arg, memsize_dump_arg,},
+    NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 static const char *
@@ -796,8 +797,7 @@ w_object(VALUE obj, struct dump_arg *arg, int limit)
 	    if (NIL_P(RHASH_IFNONE(obj))) {
 		w_byte(TYPE_HASH, arg);
 	    }
-	    else if (FL_TEST(obj, FL_USER2)) {
-		/* FL_USER2 means HASH_PROC_DEFAULT (see hash.c) */
+	    else if (FL_TEST(obj, HASH_PROC_DEFAULT)) {
 		rb_raise(rb_eTypeError, "can't dump hash with default proc");
 	    }
 	    else {
@@ -821,7 +821,7 @@ w_object(VALUE obj, struct dump_arg *arg, int limit)
 		mem = rb_struct_members(obj);
 		for (i=0; i<len; i++) {
 		    w_symbol(SYM2ID(RARRAY_AREF(mem, i)), arg);
-		    w_object(RSTRUCT_PTR(obj)[i], arg, limit);
+		    w_object(RSTRUCT_GET(obj, i), arg, limit);
 		}
 	    }
 	    break;
@@ -910,11 +910,11 @@ io_needed(void)
  *
  * Marshal can't dump following objects:
  * * anonymous Class/Module.
- * * objects which related to its system (ex: Dir, File::Stat, IO, File, Socket
+ * * objects which are related to system (ex: Dir, File::Stat, IO, File, Socket
  *   and so on)
  * * an instance of MatchData, Data, Method, UnboundMethod, Proc, Thread,
  *   ThreadGroup, Continuation
- * * objects which defines singleton methods
+ * * objects which define singleton methods
  */
 static VALUE
 marshal_dump(int argc, VALUE *argv)
@@ -1021,6 +1021,7 @@ memsize_load_arg(const void *ptr)
 static const rb_data_type_t load_arg_data = {
     "load_arg",
     {mark_load_arg, free_load_arg, memsize_load_arg,},
+    NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 #define r_entry(v, arg) r_entry0((v), (arg)->data->num_entries, (arg))
@@ -1610,44 +1611,15 @@ r_object0(struct load_arg *arg, int *ivp, VALUE extmod)
       case TYPE_BIGNUM:
 	{
 	    long len;
-	    BDIGIT *digits;
 	    VALUE data;
+            int sign;
 
-	    NEWOBJ_OF(big, struct RBignum, rb_cBignum, T_BIGNUM | (RGENGC_WB_PROTECTED_BIGNUM ? FL_WB_PROTECTED : 0));
-	    RBIGNUM_SET_SIGN(big, (r_byte(arg) == '+'));
+	    sign = r_byte(arg);
 	    len = r_long(arg);
 	    data = r_bytes0(len * 2, arg);
-#if SIZEOF_BDIGITS == SIZEOF_SHORT
-            rb_big_resize((VALUE)big, len);
-#else
-            rb_big_resize((VALUE)big, (len + 1) * 2 / sizeof(BDIGIT));
-#endif
-            digits = RBIGNUM_DIGITS(big);
-	    MEMCPY(digits, RSTRING_PTR(data), char, len * 2);
+            v = rb_integer_unpack(RSTRING_PTR(data), len, 2, 0,
+                INTEGER_PACK_LITTLE_ENDIAN | (sign == '-' ? INTEGER_PACK_NEGATIVE : 0));
 	    rb_str_resize(data, 0L);
-#if SIZEOF_BDIGITS > SIZEOF_SHORT
-	    MEMZERO((char *)digits + len * 2, char,
-		    RBIGNUM_LEN(big) * sizeof(BDIGIT) - len * 2);
-#endif
-	    len = RBIGNUM_LEN(big);
-	    while (len > 0) {
-		unsigned char *p = (unsigned char *)digits;
-		BDIGIT num = 0;
-#if SIZEOF_BDIGITS > SIZEOF_SHORT
-		int shift = 0;
-		int i;
-
-		for (i=0; i<SIZEOF_BDIGITS; i++) {
-		    num |= (int)p[i] << shift;
-		    shift += 8;
-		}
-#else
-		num = p[0] | (p[1] << 8);
-#endif
-		*digits++ = num;
-		len--;
-	    }
-	    v = rb_big_norm((VALUE)big);
 	    v = r_entry(v, arg);
             v = r_leave(v, arg);
 	}
@@ -1945,8 +1917,8 @@ clear_load_arg(struct load_arg *arg)
  * Returns the result of converting the serialized data in source into a
  * Ruby object (possibly with associated subordinate objects). source
  * may be either an instance of IO or an object that responds to
- * to_str. If proc is specified, it will be passed each object as it
- * is deserialized.
+ * to_str. If proc is specified, each object will be passed to the proc, as the object
+ * is being deserialized.
  *
  * Never pass untrusted data (including user supplied input) to this method.
  * Please see the overview for further details.
@@ -1968,7 +1940,7 @@ marshal_load(int argc, VALUE *argv)
     }
     else if (rb_respond_to(port, s_getbyte) && rb_respond_to(port, s_read)) {
 	rb_check_funcall(port, s_binmode, 0, 0);
-	infection = (int)(FL_TAINT | FL_TEST(port, FL_UNTRUSTED));
+	infection = (int)FL_TAINT;
     }
     else {
 	io_needed();
@@ -2146,7 +2118,9 @@ Init_marshal(void)
     rb_define_module_function(rb_mMarshal, "load", marshal_load, -1);
     rb_define_module_function(rb_mMarshal, "restore", marshal_load, -1);
 
+    /* major version */
     rb_define_const(rb_mMarshal, "MAJOR_VERSION", INT2FIX(MARSHAL_MAJOR));
+    /* minor version */
     rb_define_const(rb_mMarshal, "MINOR_VERSION", INT2FIX(MARSHAL_MINOR));
 
     compat_allocator_tbl = st_init_numtable();

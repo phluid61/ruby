@@ -363,6 +363,35 @@ eom
     assert_constant_reassignment_toplevel("11",    "+",  %w[53], already)
   end
 
+  def test_integer_suffix
+    ["1if true", "begin 1end"].each do |src|
+      assert_valid_syntax(src)
+      assert_equal(1, eval(src), src)
+    end
+  end
+
+  def test_value_of_def
+    assert_separately [], <<-EOS
+      assert_equal(:foo, (def foo; end))
+      assert_equal(:foo, (def (Object.new).foo; end))
+    EOS
+  end
+
+  def test_heredoc_cr
+    assert_syntax_error("puts <<""EOS\n""ng\n""EOS\r""NO\n", /can't find string "EOS" anywhere before EOF/)
+  end
+
+  def test__END___cr
+    assert_syntax_error("__END__\r<<<<<\n", /unexpected <</)
+  end
+
+  def test_warning_for_cr
+    feature8699 = '[ruby-core:56240] [Feature #8699]'
+    assert_warning(/encountered \\r/, feature8699) do
+      eval("\r""__id__\r")
+    end
+  end
+
   private
 
   def not_label(x) @result = x; @not_label ||= nil end

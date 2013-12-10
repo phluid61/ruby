@@ -558,7 +558,7 @@ class TestFloat < Test::Unit::TestCase
   end
 
   def test_num2dbl
-    assert_raise(TypeError) do
+    assert_raise(ArgumentError) do
       1.0.step(2.0, "0.5") {}
     end
     assert_raise(TypeError) do
@@ -612,5 +612,11 @@ class TestFloat < Test::Unit::TestCase
     assert_raise(TypeError) { a = 1.0; def a.foo; end }
     # always not flonum
     assert_raise(TypeError) { a = Float::INFINITY; def a.foo; end }
+  end
+
+  def test_long_string
+    assert_separately([], <<-'end;')
+    assert_in_epsilon(10.0, ("1."+"1"*300000).to_f*9)
+    end;
   end
 end

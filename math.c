@@ -11,6 +11,7 @@
 
 #include "ruby/ruby.h"
 #include "internal.h"
+#include <float.h>
 #include <math.h>
 #include <errno.h>
 
@@ -19,7 +20,7 @@
     extern int signbit(double);
 #endif
 
-#define numberof(array) (int)(sizeof(array) / sizeof((array)[0]))
+#define RB_BIGNUM_TYPE_P(x) RB_TYPE_P((x), T_BIGNUM)
 
 VALUE rb_mMath;
 VALUE rb_eMathDomainError;
@@ -40,7 +41,7 @@ VALUE rb_eMathDomainError;
  *  Computes the arc tangent given +y+ and +x+.
  *  Returns a Float in the range -PI..PI.
  *
- *  Domain: (−INFINITY, INFINITY)
+ *  Domain: (-INFINITY, INFINITY)
  *
  *  Codomain: [-PI, PI]
  *
@@ -86,7 +87,7 @@ math_atan2(VALUE obj, VALUE y, VALUE x)
  *  Computes the cosine of +x+ (expressed in radians).
  *  Returns a Float in the range -1.0..1.0.
  *
- *  Domain: (−INFINITY, INFINITY)
+ *  Domain: (-INFINITY, INFINITY)
  *
  *  Codomain: [-1, 1]
  *
@@ -108,7 +109,7 @@ math_cos(VALUE obj, VALUE x)
  *  Computes the sine of +x+ (expressed in radians).
  *  Returns a Float in the range -1.0..1.0.
  *
- *  Domain: (−INFINITY, INFINITY)
+ *  Domain: (-INFINITY, INFINITY)
  *
  *  Codomain: [-1, 1]
  *
@@ -130,9 +131,9 @@ math_sin(VALUE obj, VALUE x)
  *
  *  Computes the tangent of +x+ (expressed in radians).
  *
- *  Domain: (−INFINITY, INFINITY)
+ *  Domain: (-INFINITY, INFINITY)
  *
- *  Codomain: (−INFINITY, INFINITY)
+ *  Codomain: (-INFINITY, INFINITY)
  *
  *    Math.tan(0) #=> 0.0
  *
@@ -204,7 +205,7 @@ math_asin(VALUE obj, VALUE x)
  *
  *  Computes the arc tangent of +x+. Returns -PI/2..PI/2.
  *
- *  Domain: (−INFINITY, INFINITY)
+ *  Domain: (-INFINITY, INFINITY)
  *
  *  Codomain: (-PI/2, PI/2)
  *
@@ -232,7 +233,7 @@ cosh(double x)
  *
  *  Computes the hyperbolic cosine of +x+ (expressed in radians).
  *
- *  Domain: (−INFINITY, INFINITY)
+ *  Domain: (-INFINITY, INFINITY)
  *
  *  Codomain: [1, INFINITY)
  *
@@ -261,9 +262,9 @@ sinh(double x)
  *
  *  Computes the hyperbolic sine of +x+ (expressed in radians).
  *
- *  Domain: (−INFINITY, INFINITY)
+ *  Domain: (-INFINITY, INFINITY)
  *
- *  Codomain: (−INFINITY, INFINITY)
+ *  Codomain: (-INFINITY, INFINITY)
  *
  *    Math.sinh(0) #=> 0.0
  *
@@ -290,9 +291,9 @@ tanh(double x)
  *
  *  Computes the hyperbolic tangent of +x+ (expressed in radians).
  *
- *  Domain: (−INFINITY, INFINITY)
+ *  Domain: (-INFINITY, INFINITY)
  *
- *  Codomain: (−1, 1)
+ *  Codomain: (-1, 1)
  *
  *    Math.tanh(0) #=> 0.0
  *
@@ -441,8 +442,19 @@ math_log(int argc, VALUE *argv)
 {
     VALUE x, base;
     double d0, d;
+    size_t numbits;
 
     rb_scan_args(argc, argv, "11", &x, &base);
+
+    if (RB_BIGNUM_TYPE_P(x) && RBIGNUM_POSITIVE_P(x) &&
+            DBL_MAX_EXP <= (numbits = rb_absint_numwords(x, 1, NULL))) {
+        numbits -= DBL_MANT_DIG;
+        x = rb_big_rshift(x, SIZET2NUM(numbits));
+    }
+    else {
+	numbits = 0;
+    }
+
     Need_Float(x);
     d0 = RFLOAT_VALUE(x);
     /* check for domain error */
@@ -450,6 +462,8 @@ math_log(int argc, VALUE *argv)
     /* check for pole error */
     if (d0 == 0.0) return DBL2NUM(-INFINITY);
     d = log(d0);
+    if (numbits)
+        d += numbits * log(2); /* log(2**numbits) */
     if (argc == 2) {
 	Need_Float(base);
 	d /= log(RFLOAT_VALUE(base));
@@ -490,6 +504,16 @@ static VALUE
 math_log2(VALUE obj, VALUE x)
 {
     double d0, d;
+    size_t numbits;
+
+    if (RB_BIGNUM_TYPE_P(x) && RBIGNUM_POSITIVE_P(x) &&
+            DBL_MAX_EXP <= (numbits = rb_absint_numwords(x, 1, NULL))) {
+        numbits -= DBL_MANT_DIG;
+        x = rb_big_rshift(x, SIZET2NUM(numbits));
+    }
+    else {
+	numbits = 0;
+    }
 
     Need_Float(x);
     d0 = RFLOAT_VALUE(x);
@@ -498,6 +522,7 @@ math_log2(VALUE obj, VALUE x)
     /* check for pole error */
     if (d0 == 0.0) return DBL2NUM(-INFINITY);
     d = log2(d0);
+    d += numbits;
     return DBL2NUM(d);
 }
 
@@ -521,6 +546,16 @@ static VALUE
 math_log10(VALUE obj, VALUE x)
 {
     double d0, d;
+    size_t numbits;
+
+    if (RB_BIGNUM_TYPE_P(x) && RBIGNUM_POSITIVE_P(x) &&
+            DBL_MAX_EXP <= (numbits = rb_absint_numwords(x, 1, NULL))) {
+        numbits -= DBL_MANT_DIG;
+        x = rb_big_rshift(x, SIZET2NUM(numbits));
+    }
+    else {
+	numbits = 0;
+    }
 
     Need_Float(x);
     d0 = RFLOAT_VALUE(x);
@@ -529,6 +564,8 @@ math_log10(VALUE obj, VALUE x)
     /* check for pole error */
     if (d0 == 0.0) return DBL2NUM(-INFINITY);
     d = log10(d0);
+    if (numbits)
+        d += numbits * log10(2); /* log10(2**numbits) */
     return DBL2NUM(d);
 }
 

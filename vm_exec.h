@@ -27,7 +27,7 @@ typedef rb_iseq_t *ISEQ;
 #if VMDEBUG > 0
 #define debugs printf
 #define DEBUG_ENTER_INSN(insn) \
-  rb_vmdebug_debug_print_pre(th, GET_CFP());
+    rb_vmdebug_debug_print_pre(th, GET_CFP(),GET_PC());
 
 #if OPT_STACK_CACHING
 #define SC_REGS() , reg_a, reg_b
@@ -169,5 +169,7 @@ default:                        \
 #endif
 
 #define SCREG(r) (reg_##r)
+#define CHECK_VM_STACK_OVERFLOW_FOR_INSN(cfp, margin) \
+    WHEN_VM_STACK_OVERFLOWED(cfp, (cfp)->sp, margin) vm_stack_overflow_for_insn()
 
 #endif /* RUBY_VM_EXEC_H */

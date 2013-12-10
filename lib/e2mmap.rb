@@ -1,6 +1,6 @@
 #
 #--
-#   e2mmap.rb - for ruby 1.1
+#   e2mmap.rb - for Ruby 1.1
 #       $Release Version: 2.0$
 #       $Revision: 1.10 $
 #       by Keiju ISHITSUKA
@@ -22,7 +22,7 @@
 # 2.
 #   module Error
 #     extend Exception2MessageMapper
-#     def_e2meggage ExistingExceptionClass, "message..."
+#     def_e2message ExistingExceptionClass, "message..."
 #     def_exception :NewExceptionClass, "message..."[, superclass]
 #     ...
 #   end

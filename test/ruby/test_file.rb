@@ -1,5 +1,6 @@
 require 'test/unit'
 require 'tempfile'
+require "thread"
 require_relative 'envutil'
 require_relative 'ut_eof'
 
@@ -116,6 +117,32 @@ class TestFile < Test::Unit::TestCase
       f.truncate 10
       assert_equal("\0" * 7, f.read(100), "[ruby-dev:24532]")
     }
+  end
+
+  def test_truncate_size
+    Tempfile.create("test-truncate") do |f|
+      q1 = Queue.new
+      q2 = Queue.new
+
+      Thread.new do
+        data = ''
+        64.times do |i|
+          data << i.to_s
+          f.rewind
+          f.print data
+          f.truncate(data.bytesize)
+          q1.push data.bytesize
+          q2.pop
+        end
+        q1.push nil
+      end
+
+      while size = q1.pop
+        assert_equal size, File.size(f.path)
+        assert_equal size, f.size
+        q2.push true
+      end
+    end
   end
 
   def test_read_all_extended_file
@@ -312,8 +339,9 @@ class TestFile < Test::Unit::TestCase
   end
 
   def test_file_open_double_mode
-    e = assert_raises(ArgumentError) { File.open("a", 'w', :mode => 'rw+') }
-    assert_equal 'mode specified twice', e.message
+    assert_raise_with_message(ArgumentError, 'mode specified twice') {
+      File.open("a", 'w', :mode => 'rw+')
+    }
   end
 
   def test_conflicting_encodings

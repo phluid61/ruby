@@ -41,8 +41,8 @@ end
 # :startdoc:
 
 ##
-# mkmf.rb is used by ruby C extensions to generate a Makefile which will
-# correctly compile and link the C extension to ruby and a third-party
+# mkmf.rb is used by Ruby C extensions to generate a Makefile which will
+# correctly compile and link the C extension to Ruby and a third-party
 # library.
 module MakeMakefile
   #### defer until this module become global-state free.
@@ -57,7 +57,7 @@ module MakeMakefile
   # end
 
   ##
-  # The makefile configuration using the defaults from when ruby was built.
+  # The makefile configuration using the defaults from when Ruby was built.
 
   CONFIG = RbConfig::MAKEFILE_CONFIG
   ORIG_LIBPATH = ENV['LIB']
@@ -199,21 +199,21 @@ module MakeMakefile
       ]
     elsif $configure_args.has_key?('--vendor')
       dirs = [
-        ['BINDIR',        '$(DESTDIR)$(bindir)'],
-        ['RUBYCOMMONDIR', '$(DESTDIR)$(vendordir)$(target_prefix)'],
-        ['RUBYLIBDIR',    '$(DESTDIR)$(vendorlibdir)$(target_prefix)'],
-        ['RUBYARCHDIR',   '$(DESTDIR)$(vendorarchdir)$(target_prefix)'],
-        ['HDRDIR',        '$(DESTDIR)$(rubyhdrdir)/ruby$(target_prefix)'],
-        ['ARCHHDRDIR',    '$(DESTDIR)$(rubyhdrdir)/$(arch)/ruby$(target_prefix)'],
+        ['BINDIR',        '$(bindir)'],
+        ['RUBYCOMMONDIR', '$(vendordir)$(target_prefix)'],
+        ['RUBYLIBDIR',    '$(vendorlibdir)$(target_prefix)'],
+        ['RUBYARCHDIR',   '$(vendorarchdir)$(target_prefix)'],
+        ['HDRDIR',        '$(rubyhdrdir)/ruby$(target_prefix)'],
+        ['ARCHHDRDIR',    '$(rubyhdrdir)/$(arch)/ruby$(target_prefix)'],
       ]
     else
       dirs = [
-        ['BINDIR',        '$(DESTDIR)$(bindir)'],
-        ['RUBYCOMMONDIR', '$(DESTDIR)$(sitedir)$(target_prefix)'],
-        ['RUBYLIBDIR',    '$(DESTDIR)$(sitelibdir)$(target_prefix)'],
-        ['RUBYARCHDIR',   '$(DESTDIR)$(sitearchdir)$(target_prefix)'],
-        ['HDRDIR',        '$(DESTDIR)$(rubyhdrdir)/ruby$(target_prefix)'],
-        ['ARCHHDRDIR',    '$(DESTDIR)$(rubyhdrdir)/$(arch)/ruby$(target_prefix)'],
+        ['BINDIR',        '$(bindir)'],
+        ['RUBYCOMMONDIR', '$(sitedir)$(target_prefix)'],
+        ['RUBYLIBDIR',    '$(sitelibdir)$(target_prefix)'],
+        ['RUBYARCHDIR',   '$(sitearchdir)$(target_prefix)'],
+        ['HDRDIR',        '$(rubyhdrdir)/ruby$(target_prefix)'],
+        ['ARCHHDRDIR',    '$(rubyhdrdir)/$(arch)/ruby$(target_prefix)'],
       ]
     end
     dirs << ['target_prefix', (target_prefix ? "/#{target_prefix}" : "")]
@@ -235,11 +235,10 @@ module MakeMakefile
     path = dir
   end
   $extmk ||= false
-  if not $extmk and File.exist?(RbConfig::CONFIG["rubyhdrdir"] + "/ruby/ruby.h")
-    $hdrdir = CONFIG["rubyhdrdir"]
+  if not $extmk and File.exist?(($hdrdir = RbConfig::CONFIG["rubyhdrdir"]) + "/ruby/ruby.h")
     $topdir = $hdrdir
     $top_srcdir = $hdrdir
-    $arch_hdrdir = CONFIG["rubyarchhdrdir"]
+    $arch_hdrdir = RbConfig::CONFIG["rubyarchhdrdir"]
   elsif File.exist?(($hdrdir = ($top_srcdir ||= topdir) + "/include")  + "/ruby.h")
     $topdir ||= RbConfig::CONFIG["topdir"]
     $arch_hdrdir = "$(extout)/include/$(arch)"
@@ -247,11 +246,12 @@ module MakeMakefile
     abort "mkmf.rb can't find header files for ruby at #{$hdrdir}/ruby.h"
   end
 
+  CONFTEST = "conftest".freeze
+  CONFTEST_C = "#{CONFTEST}.c"
+
   OUTFLAG = CONFIG['OUTFLAG']
   COUTFLAG = CONFIG['COUTFLAG']
-  CPPOUTFILE = CONFIG['CPPOUTFILE']
-
-  CONFTEST_C = "conftest.c".freeze
+  CPPOUTFILE = config_string('CPPOUTFILE') {|str| str.sub(/\bconftest\b/, CONFTEST)}
 
   def rm_f(*files)
     opt = (Hash === files.last ? [files.pop] : [])
@@ -378,7 +378,7 @@ module MakeMakefile
   def xsystem command, opts = nil
     varpat = /\$\((\w+)\)|\$\{(\w+)\}/
     if varpat =~ command
-      vars = Hash.new {|h, k| h[k] = ''; ENV[k]}
+      vars = Hash.new {|h, k| h[k] = ENV[k]}
       command = command.dup
       nil while command.gsub!(varpat) {vars[$1||$2]}
     end
@@ -463,7 +463,7 @@ MSG
       xsystem(command, *opts)
     ensure
       log_src(src)
-      MakeMakefile.rm_rf 'conftest.dSYM'
+      MakeMakefile.rm_rf "#{CONFTEST}.dSYM"
     end
   end
 
@@ -539,7 +539,7 @@ MSG
       end
     else
       try_do(src, cmd, *opts, &b)
-    end and File.executable?("conftest#{$EXEEXT}")
+    end and File.executable?(CONFTEST+$EXEEXT)
   end
 
   # Returns whether or not the +src+ can be compiled as a C source and linked
@@ -555,7 +555,7 @@ MSG
   def try_link(src, opt="", *opts, &b)
     try_link0(src, opt, *opts, &b)
   ensure
-    MakeMakefile.rm_f "conftest*", "c0x32*"
+    MakeMakefile.rm_f "#{CONFTEST}*", "c0x32*"
   end
 
   # Returns whether or not the +src+ can be compiled as a C source.  +opt+ is
@@ -569,9 +569,9 @@ MSG
   # [+opt+] a String which contains compiler options
   def try_compile(src, opt="", *opts, &b)
     with_werror(opt, *opts) {|_opt, *_opts| try_do(src, cc_command(_opt), *_opts, &b)} and
-      File.file?("conftest.#{$OBJEXT}")
+      File.file?("#{CONFTEST}.#{$OBJEXT}")
   ensure
-    MakeMakefile.rm_f "conftest*"
+    MakeMakefile.rm_f "#{CONFTEST}*"
   end
 
   # Returns whether or not the +src+ can be preprocessed with the C
@@ -585,9 +585,9 @@ MSG
   # [+opt+] a String which contains preprocessor options
   def try_cpp(src, opt="", *opts, &b)
     try_do(src, cpp_command(CPPOUTFILE, opt), *opts, &b) and
-      File.file?("conftest.i")
+      File.file?("#{CONFTEST}.i")
   ensure
-    MakeMakefile.rm_f "conftest*"
+    MakeMakefile.rm_f "#{CONFTEST}*"
   end
 
   alias_method :try_header, (config_string('try_header') || :try_cpp)
@@ -701,12 +701,12 @@ int main() {printf("%"PRI_CONFTEST_PREFIX"#{neg ? 'd' : 'u'}\\n", conftest_const
 }
       begin
         if try_link0(src, opt, &b)
-          xpopen("./conftest") do |f|
+          xpopen("./#{CONFTEST}") do |f|
             return Integer(f.gets)
           end
         end
       ensure
-        MakeMakefile.rm_f "conftest*"
+        MakeMakefile.rm_f "#{CONFTEST}*"
       end
     end
     nil
@@ -801,7 +801,7 @@ SRC
       end
     end
   ensure
-    MakeMakefile.rm_f "conftest*"
+    MakeMakefile.rm_f "#{CONFTEST}*"
     log_src(src)
   end
 
@@ -838,12 +838,12 @@ SRC
   def try_run(src, opt = "", &b)
     raise "cannot run test program while cross compiling" if CROSS_COMPILING
     if try_link0(src, opt, &b)
-      xsystem("./conftest")
+      xsystem("./#{CONFTEST}")
     else
       nil
     end
   ensure
-    MakeMakefile.rm_f "conftest*"
+    MakeMakefile.rm_f "#{CONFTEST}*"
   end
 
   def install_files(mfile, ifiles, map = nil, srcprefix = nil)
@@ -1081,16 +1081,24 @@ SRC
   # the +HAVE_FRAMEWORK_RUBY+ preprocessor macro would be passed to the
   # compiler.
   #
+  # If +fw+ is a pair of the framework name and its header file name
+  # that header file is checked, instead of the normally used header
+  # file which is named same as the framework.
   def have_framework(fw, &b)
+    if Array === fw
+      fw, header = *fw
+    else
+      header = "#{fw}.h"
+    end
     checking_for fw do
-      src = cpp_include("#{fw}/#{fw}.h") << "\n" "int main(void){return 0;}"
+      src = cpp_include("#{fw}/#{header}") << "\n" "int main(void){return 0;}"
       opt = " -framework #{fw}"
       if try_link(src, "-ObjC#{opt}", &b)
         $defs.push(format("-DHAVE_FRAMEWORK_%s", fw.tr_cpp))
         # TODO: non-worse way than this hack, to get rid of separating
         # option and its argument.
         $LDFLAGS << " -ObjC" unless /(\A|\s)-ObjC(\s|\z)/ =~ $LDFLAGS
-        $LDFLAGS << opt
+        $LIBS << opt
         true
       else
         false
@@ -1715,13 +1723,25 @@ SRC
     [idir, ldir]
   end
 
-  # :stopdoc:
-
-  # Handles meta information about installed libraries. Uses your platform's
-  # pkg-config program if it has one.
+  # Returns compile/link information about an installed library in a
+  # tuple of <code>[cflags, ldflags, libs]</code>, by using the
+  # command found first in the following commands:
   #
-  # The actual command name can be overridden by
-  # <code>--with-pkg-config</code> command line option.
+  # 1. If <code>--with-{pkg}-config={command}</code> is given via
+  #    command line option: <code>{command} {option}</code>
+  #
+  # 2. <code>{pkg}-config {option}</code>
+  #
+  # 3. <code>pkg-config {option} {pkg}</code>
+  #
+  # Where {option} is, for instance, <code>--cflags</code>.
+  #
+  # The values obtained are appended to +$CFLAGS+, +$LDFLAGS+ and
+  # +$libs+.
+  #
+  # If an <code>option</code> argument is given, the config command is
+  # invoked with the option and a stripped output string is returned
+  # without modifying any of the global values mentioned above.
   def pkg_config(pkg, option=nil)
     if pkgconfig = with_config("#{pkg}-config") and find_executable0(pkgconfig)
       # iff package specific config command is given
@@ -1736,6 +1756,7 @@ SRC
       # default to package specific config command, as a last resort.
       get = proc {|opt| `#{pkgconfig} --#{opt}`.strip}
     end
+    orig_ldflags = $LDFLAGS
     if get and option
       get[option]
     elsif get and try_ldflags(ldflags = get['libs'])
@@ -1743,7 +1764,7 @@ SRC
       libs = get['libs-only-l']
       ldflags = (Shellwords.shellwords(ldflags) - Shellwords.shellwords(libs)).quote.join(" ")
       $CFLAGS += " " << cflags
-      $LDFLAGS += " " << ldflags
+      $LDFLAGS = [orig_ldflags, ldflags].join(' ')
       $libs += " " << libs
       Logging::message "package configuration for %s\n", pkg
       Logging::message "cflags: %s\nldflags: %s\nlibs: %s\n\n",
@@ -1755,8 +1776,9 @@ SRC
     end
   end
 
+  # :stopdoc:
+
   def with_destdir(dir)
-    return dir unless $extmk
     dir = dir.sub($dest_prefix_pattern, '')
     /\A\$[\(\{]/ =~ dir ? dir : "$(DESTDIR)"+dir
   end
@@ -1827,6 +1849,7 @@ VPATH = #{vpath.join(CONFIG['PATH_SEPARATOR'])}
     prefix = mkintpath(CONFIG["prefix"])
     if destdir = prefix[$dest_prefix_pattern, 1]
       mk << "\nDESTDIR = #{destdir}\n"
+      prefix = prefix[destdir.size..-1]
     end
     mk << "prefix = #{with_destdir(prefix).unspace}\n"
     CONFIG.each do |key, var|
@@ -2089,7 +2112,7 @@ RULES
     $target = target
     libpath = $DEFLIBPATH|$LIBPATH
     message "creating Makefile\n"
-    MakeMakefile.rm_f "conftest*"
+    MakeMakefile.rm_f "#{CONFTEST}*"
     if CONFIG["DLEXT"] == $OBJEXT
       for lib in libs = $libs.split
         lib.sub!(/-l(.*)/, %%"lib\\1.#{$LIBEXT}"%)
@@ -2335,7 +2358,7 @@ site-install-rb: install-rb
       mfile.print "$(ECHO) linking static-library $(@#{rsep})\n\t$(Q) "
       mfile.print "$(AR) #{config_string('ARFLAGS') || 'cru '}$@ $(OBJS)"
       config_string('RANLIB') do |ranlib|
-        mfile.print "\n\t-$(Q)#{ranlib} $(DLLIB) 2> /dev/null || true"
+        mfile.print "\n\t-$(Q)#{ranlib} $(@) 2> /dev/null || true"
       end
     end
     mfile.print "\n\n"
@@ -2505,12 +2528,12 @@ MESSAGE
   end
 
   ##
-  # Common headers for ruby C extensions
+  # Common headers for Ruby C extensions
 
   COMMON_HEADERS = hdr.join("\n")
 
   ##
-  # Common libraries for ruby C extensions
+  # Common libraries for Ruby C extensions
 
   COMMON_LIBS = config_string('COMMON_LIBS', &split) || []
 
@@ -2534,7 +2557,7 @@ MESSAGE
   # Command which will compile a program in order to test linking a library
 
   TRY_LINK = config_string('TRY_LINK') ||
-    "$(CC) #{OUTFLAG}conftest#{$EXEEXT} $(INCFLAGS) $(CPPFLAGS) " \
+    "$(CC) #{OUTFLAG}#{CONFTEST}#{$EXEEXT} $(INCFLAGS) $(CPPFLAGS) " \
     "$(CFLAGS) $(src) $(LIBPATH) $(LDFLAGS) $(ARCH_FLAG) $(LOCAL_LIBS) $(LIBS)"
 
   ##
@@ -2585,7 +2608,7 @@ distclean-rb::
 distclean-so::
 distclean-static::
 distclean: clean distclean-so distclean-static distclean-rb-default distclean-rb
-\t\t-$(Q)$(RM) Makefile $(RUBY_EXTCONF_H) conftest.* mkmf.log
+\t\t-$(Q)$(RM) Makefile $(RUBY_EXTCONF_H) #{CONFTEST}.* mkmf.log
 \t\t-$(Q)$(RM) core ruby$(EXEEXT) *~ $(DISTCLEANFILES#{sep})
 \t\t-$(Q)$(RMDIRS) $(DISTCLEANDIRS#{sep})#{$ignore_error}
 
